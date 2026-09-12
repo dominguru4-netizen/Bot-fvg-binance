@@ -16,14 +16,14 @@ TELEGRAM_CHAT_ID = "2118999160"
 # PARÁMETROS EXACTOS DE TRADINGVIEW (FVG V3)
 # ==========================================
 TIMEFRAME = '5m'          
-LIMIT_SWEEP = 96          # Máx. velas para el barrido
-SL_PERCENT = 0.050        # Stop Loss 5%
-TP1_PERCENT = 0.007       # Take Profit 0.7%
-MAX_VALIDEZ_ATR = 10.0    # Banda máx. de validez (x ATR)
+LIMIT_SWEEP = 96          
+SL_PERCENT = 0.050        
+TP1_PERCENT = 0.007       
+MAX_VALIDEZ_ATR = 10.0    
 
 # LISTA DE PARES DE FUTUROS (Sufijo .P)
 SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT',
+    'H/USDT', 'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT',
     'NEAR/USDT', 'SUI/USDT', 'PEPE/USDT', 'SHIB/USDT', 'LTC/USDT', 'UNI/USDT', 'APT/USDT', 'BCH/USDT', 'ICP/USDT', 'FET/USDT',
     'RENDER/USDT', 'ETC/USDT', 'FIL/USDT', 'XMR/USDT', 'TIA/USDT', 'ATOM/USDT', 'STX/USDT', 'INJ/USDT', 'WIF/USDT', 'OP/USDT',
     'ARB/USDT', 'THETA/USDT', 'GRT/USDT', 'RUNE/USDT', 'FTM/USDT', 'SEI/USDT', 'FLOKI/USDT', 'BONK/USDT', 'JUP/USDT', 'AAVE/USDT',
@@ -53,8 +53,8 @@ def send_telegram(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error enviando Telegram: {e}")
 
 def run_strategy_for_symbol(symbol):
     try:
@@ -64,7 +64,6 @@ def run_strategy_for_symbol(symbol):
             
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
         
-        # --- INDICADORES ---
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -85,41 +84,39 @@ def run_strategy_for_symbol(symbol):
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
 
-        # Variables actuales
-        c_close = df['close'].iloc[-2]
-        c_high = df['high'].iloc[-2]
-        c_low = df['low'].iloc[-2]
-        c_vol = df['volume'].iloc[-2]
-        ema_val = df['ema_27'].iloc[-2]
-        atr_val = df['atr'].iloc[-2]
+        # Usamos la última vela cerrada (-2) para evitar ruido, o -1 si queremos inmediatez
+        idx = -2
+        c_close = df['close'].iloc[idx]
+        c_high = df['high'].iloc[idx]
+        c_low = df['low'].iloc[idx]
+        c_vol = df['volume'].iloc[idx]
+        ema_val = df['ema_27'].iloc[idx]
+        atr_val = df['atr'].iloc[idx]
         
         # --- 1. FVG REVERSIÓN ---
-        v1_high = df['high'].iloc[-4]
-        v1_low = df['low'].iloc[-4]
-        v3_low = df['low'].iloc[-2]
-        v3_high = df['high'].iloc[-2]
+        v1_high = df['high'].iloc[idx-2]
+        v1_low = df['low'].iloc[idx-2]
+        v3_low = df['low'].iloc[idx]
+        v3_high = df['high'].iloc[idx]
 
         fvg_bullish = v3_low > v1_high
         fvg_bearish = v3_high < v1_low
         fvg_gap = v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
-        
-        # Validación con el límite de validez (x ATR en 10) y mínimo > 0
         fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-        # Barrido de 96 velas
-        min_previo = df['low'].iloc[-(LIMIT_SWEEP+2):-2].min()
-        max_previo = df['high'].iloc[-(LIMIT_SWEEP+2):-2].max()
+        min_previo = df['low'].iloc[-(LIMIT_SWEEP+abs(idx)):abs(idx)].min()
+        max_previo = df['high'].iloc[-(LIMIT_SWEEP+abs(idx)):abs(idx)].max()
         swept_low = c_low < min_previo
         swept_high = c_high > max_previo
 
-        oversold = (df['rsi'].iloc[-2] < 35) or (c_low <= df['bb_lower'].iloc[-2])
-        overbought = (df['rsi'].iloc[-2] > 65) or (c_high >= df['bb_upper'].iloc[-2])
+        oversold = (df['rsi'].iloc[idx] < 35) or (c_low <= df['bb_lower'].iloc[idx])
+        overbought = (df['rsi'].iloc[idx] > 65) or (c_high >= df['bb_upper'].iloc[idx])
 
-        # --- 2. FVG TENDENCIA / CONTINUACIÓN ---
-        v1_high_p = df['high'].iloc[-5]
-        v1_low_p = df['low'].iloc[-5]
-        v3_low_p = df['low'].iloc[-3]
-        v3_high_p = df['high'].iloc[-3]
+        # --- 2. FVG TENDENCIA ---
+        v1_high_p = df['high'].iloc[idx-3]
+        v1_low_p = df['low'].iloc[idx-3]
+        v3_low_p = df['low'].iloc[idx-1]
+        v3_high_p = df['high'].iloc[idx-1]
 
         fvg_bullish_p = v3_low_p > v1_high_p
         fvg_bearish_p = v3_high_p < v1_low_p
@@ -131,62 +128,41 @@ def run_strategy_for_symbol(symbol):
 
         tendencia_alcista = c_close > ema_val
         tendencia_bajista = c_close < ema_val
-        volumen_alto = c_vol > (df['vol_sma'].iloc[-2] * 1.2)
+        volumen_alto = c_vol > (df['vol_sma'].iloc[idx] * 1.2)
 
         clean_symbol = symbol.replace('/', '') + '.P'
 
-        # --- DISPAROS DE REVERSIÓN ---
+        # --- DISPAROS ---
         if fvg_bullish and fvg_valido and swept_low and oversold:
             sl = v1_high * (1 - SL_PERCENT)
             tp1 = v1_high * (1 + TP1_PERCENT)
-            msg = (
-                f"🟢 *LONG · FVG (Reversión)*\n"
-                f"Par: `{clean_symbol}`\n"
-                f"Entrada FVG: `{v1_high:.4f}`\n"
-                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            )
+            msg = f"🟢 *LONG · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v1_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
             
         if fvg_bearish and fvg_valido and swept_high and overbought:
             sl = v1_low * (1 + SL_PERCENT)
             tp1 = v1_low * (1 - TP1_PERCENT)
-            msg = (
-                f"🔴 *SHORT · FVG (Reversión)*\n"
-                f"Par: `{clean_symbol}`\n"
-                f"Entrada FVG: `{v3_high:.4f}`\n"
-                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            )
+            msg = f"🔴 *SHORT · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v3_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
 
-        # --- DISPAROS DE TENDENCIA / CONTINUACIÓN ---
         if rebote_bullish and tendencia_alcista and volumen_alto:
             sl = v1_high_p * (1 - SL_PERCENT)
             tp1 = c_close * (1 + TP1_PERCENT)
-            msg = (
-                f"🟢 *LONG · FVG (Tendencia)*\n"
-                f"Par: `{clean_symbol}`\n"
-                f"Rebote FVG: `{v1_high_p:.4f}`\n"
-                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            )
+            msg = f"🟢 *LONG · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v1_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
 
         if rebote_bearish and tendencia_bajista and volumen_alto:
             sl = v1_low_p * (1 + SL_PERCENT)
             tp1 = c_close * (1 - TP1_PERCENT)
-            msg = (
-                f"🔴 *SHORT · FVG (Tendencia)*\n"
-                f"Par: `{clean_symbol}`\n"
-                f"Rebote FVG: `{v3_high_p:.4f}`\n"
-                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            )
+            msg = f"🔴 *SHORT · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v3_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
 
     except Exception as e:
-        pass
+        print(f"Error procesando {symbol}: {e}")
 
 async def bucle_bot():
-    print("Bot Dual Sincronizado activado.")
-    send_telegram("🎯 *Bot Sincronizado con FVG V3*\nParámetros de ATR (10), Barrido (96), RSI/Bollinger y Doble Estrategia activos.")
+    print("Bot con logs de depuración activos.")
+    send_telegram("🛠 *Bot en modo depuración*\nMonitoreando errores en tiempo real.")
     
     while True:
         for symbol in SYMBOLS:
