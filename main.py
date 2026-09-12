@@ -16,7 +16,7 @@ TELEGRAM_CHAT_ID = "2118999160"
 # PARÁMETROS DE LA ESTRATEGIA
 # ==========================================
 TIMEFRAME = '5m'          
-LIMIT_SWEEP = 144         
+LIMIT_SWEEP = 96        
 SL_PERCENT = 0.050        # Stop Loss al 5%
 TP1_PERCENT = 0.007       # Take Profit al 0.7%
 TP2_PERCENT = 0.015       # Take Profit 2 al 1.5%
