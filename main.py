@@ -13,14 +13,15 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS DE LA ESTRATEGIA
+# PARÁMETROS EXACTOS DE TRADINGVIEW (FVG V3)
 # ==========================================
 TIMEFRAME = '5m'          
-LIMIT_SWEEP = 96          # Ajustado a 96 velas como acordamos
-SL_PERCENT = 0.050        
-TP1_PERCENT = 0.007       
+LIMIT_SWEEP = 96          # Máx. velas para el barrido
+SL_PERCENT = 0.050        # Stop Loss 5%
+TP1_PERCENT = 0.007       # Take Profit 0.7%
+MAX_VALIDEZ_ATR = 10.0    # Banda máx. de validez (x ATR)
 
-# LISTA DE PARES CON FORMATO DE FUTUROS (Sufijo .P / Futuros Binance)
+# LISTA DE PARES DE FUTUROS (Sufijo .P)
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT',
     'NEAR/USDT', 'SUI/USDT', 'PEPE/USDT', 'SHIB/USDT', 'LTC/USDT', 'UNI/USDT', 'APT/USDT', 'BCH/USDT', 'ICP/USDT', 'FET/USDT',
@@ -42,12 +43,9 @@ SYMBOLS = [
     'WRX/USDT', 'MBL/USDT', 'DENT/USDT', 'KEY/USDT', 'TWT/USDT', 'COS/USDT', 'CTXC/USDT'
 ]
 
-# Inicializamos el exchange configurado para futuros perpetuos por defecto
 exchange = ccxt.binance({
     'enableRateLimit': True,
-    'options': {
-        'defaultType': 'swap'  # Forzar tipo swap/perpetuo de Binance
-    }
+    'options': {'defaultType': 'swap'}
 })
 
 def send_telegram(message):
@@ -60,9 +58,8 @@ def send_telegram(message):
 
 def run_strategy_for_symbol(symbol):
     try:
-        # Descargar datos usando el formato de swap directo
-        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=200)
-        if not bars or len(bars) < 150:
+        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=150)
+        if not bars or len(bars) < 120:
             return
             
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
@@ -88,7 +85,7 @@ def run_strategy_for_symbol(symbol):
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
 
-        # --- VARIABLES ACTUALES ---
+        # Variables actuales
         c_close = df['close'].iloc[-2]
         c_high = df['high'].iloc[-2]
         c_low = df['low'].iloc[-2]
@@ -96,47 +93,49 @@ def run_strategy_for_symbol(symbol):
         ema_val = df['ema_27'].iloc[-2]
         atr_val = df['atr'].iloc[-2]
         
-        # --- FVG RECIENTE (Reversión) ---
-        v3_low = df['low'].iloc[-2]
+        # --- 1. FVG REVERSIÓN ---
         v1_high = df['high'].iloc[-4]
-        v3_high = df['high'].iloc[-2]
         v1_low = df['low'].iloc[-4]
+        v3_low = df['low'].iloc[-2]
+        v3_high = df['high'].iloc[-2]
 
         fvg_bullish = v3_low > v1_high
         fvg_bearish = v3_high < v1_low
         fvg_gap = v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
-        fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * 10.0)
+        
+        # Validación con el límite de validez (x ATR en 10) y mínimo > 0
+        fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-        # --- FVG ANTERIOR (Tendencia) ---
-        v3_low_prev = df['low'].iloc[-3]
-        v1_high_prev = df['high'].iloc[-5]
-        v3_high_prev = df['high'].iloc[-3]
-        v1_low_prev = df['low'].iloc[-5]
-
-        fvg_bullish_prev = v3_low_prev > v1_high_prev
-        fvg_bearish_prev = v3_high_prev < v1_low_prev
-        fvg_gap_prev = v3_low_prev - v1_high_prev if fvg_bullish_prev else (v1_low_prev - v3_high_prev if fvg_bearish_prev else 0)
-        fvg_valido_prev = (fvg_gap_prev > 0) and (fvg_gap_prev <= atr_val * 10.0)
-
-        rebote_bullish = fvg_bullish_prev and fvg_valido_prev and (c_low <= v3_low_prev) and (c_close > v1_high_prev)
-        rebote_bearish = fvg_bearish_prev and fvg_valido_prev and (c_high >= v3_high_prev) and (c_close < v1_low_prev)
-
-        # --- CONDICIONES DE ENTORNO (96 velas) ---
+        # Barrido de 96 velas
         min_previo = df['low'].iloc[-(LIMIT_SWEEP+2):-2].min()
         max_previo = df['high'].iloc[-(LIMIT_SWEEP+2):-2].max()
         swept_low = c_low < min_previo
         swept_high = c_high > max_previo
+
         oversold = (df['rsi'].iloc[-2] < 35) or (c_low <= df['bb_lower'].iloc[-2])
         overbought = (df['rsi'].iloc[-2] > 65) or (c_high >= df['bb_upper'].iloc[-2])
+
+        # --- 2. FVG TENDENCIA / CONTINUACIÓN ---
+        v1_high_p = df['high'].iloc[-5]
+        v1_low_p = df['low'].iloc[-5]
+        v3_low_p = df['low'].iloc[-3]
+        v3_high_p = df['high'].iloc[-3]
+
+        fvg_bullish_p = v3_low_p > v1_high_p
+        fvg_bearish_p = v3_high_p < v1_low_p
+        fvg_gap_p = v3_low_p - v1_high_p if fvg_bullish_p else (v1_low_p - v3_high_p if fvg_bearish_p else 0)
+        fvg_valido_p = (fvg_gap_p > 0) and (fvg_gap_p <= atr_val * MAX_VALIDEZ_ATR)
+
+        rebote_bullish = fvg_bullish_p and fvg_valido_p and (c_low <= v3_low_p) and (c_close > v1_high_p)
+        rebote_bearish = fvg_bearish_p and fvg_valido_p and (c_high >= v3_high_p) and (c_close < v1_low_p)
 
         tendencia_alcista = c_close > ema_val
         tendencia_bajista = c_close < ema_val
         volumen_alto = c_vol > (df['vol_sma'].iloc[-2] * 1.2)
 
-        # Nombre estético para Telegram estilo .P
         clean_symbol = symbol.replace('/', '') + '.P'
 
-        # 1. LONG REVERSIÓN
+        # --- DISPAROS DE REVERSIÓN ---
         if fvg_bullish and fvg_valido and swept_low and oversold:
             sl = v1_high * (1 - SL_PERCENT)
             tp1 = v1_high * (1 + TP1_PERCENT)
@@ -148,19 +147,6 @@ def run_strategy_for_symbol(symbol):
             )
             send_telegram(msg)
             
-        # 2. LONG TENDENCIA
-        elif rebote_bullish and tendencia_alcista and volumen_alto:
-            sl = v1_high_prev * (1 - SL_PERCENT)
-            tp1 = c_close * (1 + TP1_PERCENT)
-            msg = (
-                f"🟢 *LONG · FVG (Tendencia)*\n"
-                f"Par: `{clean_symbol}`\n"
-                f"Toque FVG previo: `{v1_high_prev:.4f}`\n"
-                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            )
-            send_telegram(msg)
-
-        # 3. SHORT REVERSIÓN
         if fvg_bearish and fvg_valido and swept_high and overbought:
             sl = v1_low * (1 + SL_PERCENT)
             tp1 = v1_low * (1 - TP1_PERCENT)
@@ -171,15 +157,26 @@ def run_strategy_for_symbol(symbol):
                 f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
             )
             send_telegram(msg)
-            
-        # 4. SHORT TENDENCIA
-        elif rebote_bearish and tendencia_bajista and volumen_alto:
-            sl = v1_low_prev * (1 + SL_PERCENT)
+
+        # --- DISPAROS DE TENDENCIA / CONTINUACIÓN ---
+        if rebote_bullish and tendencia_alcista and volumen_alto:
+            sl = v1_high_p * (1 - SL_PERCENT)
+            tp1 = c_close * (1 + TP1_PERCENT)
+            msg = (
+                f"🟢 *LONG · FVG (Tendencia)*\n"
+                f"Par: `{clean_symbol}`\n"
+                f"Rebote FVG: `{v1_high_p:.4f}`\n"
+                f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
+            )
+            send_telegram(msg)
+
+        if rebote_bearish and tendencia_bajista and volumen_alto:
+            sl = v1_low_p * (1 + SL_PERCENT)
             tp1 = c_close * (1 - TP1_PERCENT)
             msg = (
                 f"🔴 *SHORT · FVG (Tendencia)*\n"
                 f"Par: `{clean_symbol}`\n"
-                f"Toque FVG previo: `{v3_high_prev:.4f}`\n"
+                f"Rebote FVG: `{v3_high_p:.4f}`\n"
                 f"Stop Loss: `{sl:.4f}` | TP: `{tp1:.4f}`"
             )
             send_telegram(msg)
@@ -188,16 +185,15 @@ def run_strategy_for_symbol(symbol):
         pass
 
 async def bucle_bot():
-    print("Bot FVG Masivo activado.")
-    send_telegram("🤖 *Bot FVG Actualizado*\nModo de escaneo masivo con sufijo `.P` activado.")
+    print("Bot Dual Sincronizado activado.")
+    send_telegram("🎯 *Bot Sincronizado con FVG V3*\nParámetros de ATR (10), Barrido (96), RSI/Bollinger y Doble Estrategia activos.")
     
     while True:
-        print(f"\n--- Escaneando ciclo masivo ({time.strftime('%H:%M:%S')}) ---")
         for symbol in SYMBOLS:
             run_strategy_for_symbol(symbol)
-            await asyncio.sleep(0.05) # Pausa ultra rápida para soltar alertas en cadena
+            await asyncio.sleep(0.03)
         
-        await asyncio.sleep(30) # Ciclos más cortos para revisar constantemente
+        await asyncio.sleep(20)
 
 async def handle_ping(request):
     return web.Response(text="Bot activo")
