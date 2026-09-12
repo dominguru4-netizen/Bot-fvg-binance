@@ -85,16 +85,14 @@ def run_strategy_for_symbol(symbol):
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
 
-        # Al trabajar sincronizados al cierre, la vela recién cerrada es exactamente el índice [-1]
-        idx = -1
-        c_close = df['close'].iloc[idx]
-        c_high = df['high'].iloc[idx]
-        c_low = df['low'].iloc[idx]
-        c_vol = df['volume'].iloc[idx]
-        ema_val = df['ema_27'].iloc[idx]
-        atr_val = df['atr'].iloc[idx]
+        c_close = df['close'].iloc[-1]
+        c_high = df['high'].iloc[-1]
+        c_low = df['low'].iloc[-1]
+        c_vol = df['volume'].iloc[-1]
+        ema_val = df['ema_27'].iloc[-1]
+        atr_val = df['atr'].iloc[-1]
         
-        # --- 1. FVG REVERSIÓN (Velas -3, -2, -1 respecto al cierre) ---
+        # --- 1. FVG REVERSIÓN (Secuencia: Barrido previo + FVG formado ahora) ---
         v1_high = df['high'].iloc[-3]
         v1_low = df['low'].iloc[-3]
         v3_low = df['low'].iloc[-1]
@@ -105,10 +103,11 @@ def run_strategy_for_symbol(symbol):
         fvg_gap = v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
         fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-        min_previo = df['low'].iloc[-(LIMIT_SWEEP+1):-1].min()
-        max_previo = df['high'].iloc[-(LIMIT_SWEEP+1):-1].max()
-        swept_low = c_low < min_previo
-        swept_high = c_high > max_previo
+        # Permite detectar el barrido en las últimas 5 velas previas a la formación del FVG
+        min_previo = df['low'].iloc[-(LIMIT_SWEEP+5):-5].min()
+        max_previo = df['high'].iloc[-(LIMIT_SWEEP+5):-5].max()
+        swept_low = df['low'].iloc[-5:].min() < min_previo
+        swept_high = df['high'].iloc[-5:].max() > max_previo
 
         oversold = (df['rsi'].iloc[-1] < 35) or (c_low <= df['bb_lower'].iloc[-1])
         overbought = (df['rsi'].iloc[-1] > 65) or (c_high >= df['bb_upper'].iloc[-1])
@@ -164,25 +163,21 @@ def run_strategy_for_symbol(symbol):
 
 async def bucle_bot():
     print("Bot sincronizado a temporalidad de 5 minutos iniciado.")
-    send_telegram("⏰ *Bot Sincronizado a Velas de 5m*\nAnalizando el mercado exactamente al cierre de cada vela.")
+    send_telegram("⏰ *Bot Sincronizado a Velas de 5m*\nSecuencia de Barrido + FVG activo.")
     
     while True:
-        # Calcular cuánto falta para el siguiente múltiplo exacto de 5 minutos
         now = datetime.now(timezone.utc)
         seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
         
-        # Darnos un pequeño margen de 3 segundos para asegurar que Binance ya generó y cerró la vela
         sleep_time = seconds_to_next_5m + 3
         if sleep_time < 5:
             sleep_time += 300
             
-        print(f"Esperando {sleep_time:.1f} segundos hasta el cierre de la vela de 5m...")
         await asyncio.sleep(sleep_time)
         
-        print("¡Vela cerrada! Analizando todos los pares...")
         for symbol in SYMBOLS:
             run_strategy_for_symbol(symbol)
-            await asyncio.sleep(0.05) # Pausa mínima para no saturar la API de Binance
+            await asyncio.sleep(0.05)
 
 async def handle_ping(request):
     return web.Response(text="Bot activo")
