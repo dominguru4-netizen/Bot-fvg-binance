@@ -143,7 +143,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
         pass
 
 async def bucle_bot():
-    send_telegram("⏰ *Bot Reversión Iniciado*\nEscaneando 5m (Rango > 3.8%) y 15m (Rango > 5.1%).")
+    send_telegram("⏰ *Bot Reversión Iniciado*\nEscaneando 5m (Rango > 2%) y 15m (Rango > 3%).")
     
     while True:
         now = datetime.now(timezone.utc)
