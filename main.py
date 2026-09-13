@@ -22,9 +22,9 @@ SL_PERCENT = 0.050
 TP1_PERCENT = 0.007       
 MAX_VALIDEZ_ATR = 10.0    
 
-# LISTA DE PARES DE FUTUROS (H/USDT el primero para prioridad máxima)
+# LISTA DE PARES DE FUTUROS
 SYMBOLS = [
-    'H/USDT', 'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT',
+    'H/USDT', 'SKYAI/USDT', 'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT',
     'NEAR/USDT', 'SUI/USDT', 'PEPE/USDT', 'SHIB/USDT', 'LTC/USDT', 'UNI/USDT', 'APT/USDT', 'BCH/USDT', 'ICP/USDT', 'FET/USDT',
     'RENDER/USDT', 'ETC/USDT', 'FIL/USDT', 'XMR/USDT', 'TIA/USDT', 'ATOM/USDT', 'STX/USDT', 'INJ/USDT', 'WIF/USDT', 'OP/USDT',
     'ARB/USDT', 'THETA/USDT', 'GRT/USDT', 'RUNE/USDT', 'FTM/USDT', 'SEI/USDT', 'FLOKI/USDT', 'BONK/USDT', 'JUP/USDT', 'AAVE/USDT',
@@ -65,6 +65,15 @@ def run_strategy_for_symbol(symbol):
             
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
         
+        # ========================================================
+        # ¡CORRECCIÓN CRÍTICA APLICADA!
+        # Eliminamos la última fila porque es la vela actual 
+        # que solo lleva 3 segundos abierta. 
+        # Ahora iloc[-1] será la vela de 5m que acaba de cerrar.
+        # ========================================================
+        df = df.iloc[:-1].copy()
+        
+        # --- INDICADORES ---
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -85,6 +94,7 @@ def run_strategy_for_symbol(symbol):
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
 
+        # Velas de referencia para el cierre (la vela 100% terminada)
         c_close = df['close'].iloc[-1]
         c_high = df['high'].iloc[-1]
         c_low = df['low'].iloc[-1]
@@ -92,7 +102,7 @@ def run_strategy_for_symbol(symbol):
         ema_val = df['ema_27'].iloc[-1]
         atr_val = df['atr'].iloc[-1]
         
-        # --- 1. FVG REVERSIÓN (Secuencia: Barrido previo + FVG formado ahora) ---
+        # --- 1. FVG REVERSIÓN ---
         v1_high = df['high'].iloc[-3]
         v1_low = df['low'].iloc[-3]
         v3_low = df['low'].iloc[-1]
@@ -103,7 +113,6 @@ def run_strategy_for_symbol(symbol):
         fvg_gap = v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
         fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-        # Permite detectar el barrido en las últimas 5 velas previas a la formación del FVG
         min_previo = df['low'].iloc[-(LIMIT_SWEEP+5):-5].min()
         max_previo = df['high'].iloc[-(LIMIT_SWEEP+5):-5].max()
         swept_low = df['low'].iloc[-5:].min() < min_previo
@@ -131,44 +140,52 @@ def run_strategy_for_symbol(symbol):
         volumen_alto = c_vol > (df['vol_sma'].iloc[-1] * 1.2)
 
         clean_symbol = symbol.replace('/', '') + '.P'
+        
+        # --- LOGS DE DIAGNÓSTICO (Visible en Render) ---
+        if clean_symbol in ['HUSDT.P', 'SKYAIUSDT.P']:
+            print(f"[{clean_symbol}] Velas actualizadas. Cierre: {c_close:.4f} | Vol Alto: {volumen_alto} | FVG Valido: {fvg_valido}")
 
-        # --- DISPAROS DE REVERSIÓN ---
+        # --- DISPAROS A TELEGRAM ---
         if fvg_bullish and fvg_valido and swept_low and oversold:
             sl = v1_high * (1 - SL_PERCENT)
             tp1 = v1_high * (1 + TP1_PERCENT)
             msg = f"🟢 *LONG · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v1_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
+            print(f"¡SEÑAL LONG ENVIADA A TELEGRAM PARA {clean_symbol}!")
             
         if fvg_bearish and fvg_valido and swept_high and overbought:
             sl = v1_low * (1 + SL_PERCENT)
             tp1 = v1_low * (1 - TP1_PERCENT)
             msg = f"🔴 *SHORT · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v3_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
+            print(f"¡SEÑAL SHORT ENVIADA A TELEGRAM PARA {clean_symbol}!")
 
-        # --- DISPAROS DE TENDENCIA ---
         if rebote_bullish and tendencia_alcista and volumen_alto:
             sl = v1_high_p * (1 - SL_PERCENT)
             tp1 = c_close * (1 + TP1_PERCENT)
             msg = f"🟢 *LONG · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v1_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
+            print(f"¡SEÑAL LONG TENDENCIA ENVIADA PARA {clean_symbol}!")
 
         if rebote_bearish and tendencia_bajista and volumen_alto:
             sl = v1_low_p * (1 + SL_PERCENT)
             tp1 = c_close * (1 - TP1_PERCENT)
             msg = f"🔴 *SHORT · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v3_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
+            print(f"¡SEÑAL SHORT TENDENCIA ENVIADA PARA {clean_symbol}!")
 
     except Exception as e:
-        print(f"Error en {symbol}: {e}")
+        print(f"Error procesando {symbol}: {e}")
 
 async def bucle_bot():
     print("Bot sincronizado a temporalidad de 5 minutos iniciado.")
-    send_telegram("⏰ *Bot Sincronizado a Velas de 5m*\nSecuencia de Barrido + FVG activo.")
+    send_telegram("⏰ *Bot Inicializado*\nSe ha aplicado la corrección para leer las velas correctamente cerradas.")
     
     while True:
         now = datetime.now(timezone.utc)
         seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
         
+        # Esperamos al cierre + 3 segundos de margen para que Binance actualice su base de datos
         sleep_time = seconds_to_next_5m + 3
         if sleep_time < 5:
             sleep_time += 300
@@ -177,10 +194,10 @@ async def bucle_bot():
         
         for symbol in SYMBOLS:
             run_strategy_for_symbol(symbol)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05) # Pequeña pausa para no saturar la API
 
 async def handle_ping(request):
-    return web.Response(text="Bot activo")
+    return web.Response(text="Bot activo y analizando velas de forma correcta.")
 
 async def main():
     app = web.Application()
