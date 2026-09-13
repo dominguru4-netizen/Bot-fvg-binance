@@ -14,9 +14,8 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS EXACTOS DE TRADINGVIEW (FVG V3)
+# PARÁMETROS GLOBALES
 # ==========================================
-TIMEFRAME = '5m'          
 LIMIT_SWEEP = 96          
 SL_PERCENT = 0.050        
 TP1_PERCENT = 0.007       
@@ -57,20 +56,15 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-def run_strategy_for_symbol(symbol):
+def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=150)
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=150)
         if not bars or len(bars) < 120:
             return
             
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
         
-        # ========================================================
-        # ¡CORRECCIÓN CRÍTICA APLICADA!
-        # Eliminamos la última fila porque es la vela actual 
-        # que solo lleva 3 segundos abierta. 
-        # Ahora iloc[-1] será la vela de 5m que acaba de cerrar.
-        # ========================================================
+        # Eliminar la vela actual abierta (a medias)
         df = df.iloc[:-1].copy()
         
         # --- INDICADORES ---
@@ -85,24 +79,18 @@ def run_strategy_for_symbol(symbol):
         df['bb_lower'] = sma - (std * 2.0)
         df['bb_upper'] = sma + (std * 2.0)
 
-        df['ema_27'] = df['close'].rolling(window=27).mean()
-        df['vol_sma'] = df['volume'].rolling(window=20).mean()
-
         high_low = df['high'] - df['low']
         high_close = (df['high'] - df['close'].shift()).abs()
         low_close = (df['low'] - df['close'].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = true_range.rolling(window=14).mean()
 
-        # Velas de referencia para el cierre (la vela 100% terminada)
-        c_close = df['close'].iloc[-1]
+        # Velas de referencia para el cierre
         c_high = df['high'].iloc[-1]
         c_low = df['low'].iloc[-1]
-        c_vol = df['volume'].iloc[-1]
-        ema_val = df['ema_27'].iloc[-1]
         atr_val = df['atr'].iloc[-1]
         
-        # --- 1. FVG REVERSIÓN ---
+        # --- FVG REVERSIÓN ---
         v1_high = df['high'].iloc[-3]
         v1_low = df['low'].iloc[-3]
         v3_low = df['low'].iloc[-1]
@@ -113,91 +101,79 @@ def run_strategy_for_symbol(symbol):
         fvg_gap = v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
         fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
+        # Filtro de barrido
         min_previo = df['low'].iloc[-(LIMIT_SWEEP+5):-5].min()
         max_previo = df['high'].iloc[-(LIMIT_SWEEP+5):-5].max()
         swept_low = df['low'].iloc[-5:].min() < min_previo
         swept_high = df['high'].iloc[-5:].max() > max_previo
 
+        # Extremos RSI/BB
         oversold = (df['rsi'].iloc[-1] < 35) or (c_low <= df['bb_lower'].iloc[-1])
         overbought = (df['rsi'].iloc[-1] > 65) or (c_high >= df['bb_upper'].iloc[-1])
 
-        # --- 2. FVG TENDENCIA / CONTINUACIÓN ---
-        v1_high_p = df['high'].iloc[-4]
-        v1_low_p = df['low'].iloc[-4]
-        v3_low_p = df['low'].iloc[-2]
-        v3_high_p = df['high'].iloc[-2]
-
-        fvg_bullish_p = v3_low_p > v1_high_p
-        fvg_bearish_p = v3_high_p < v1_low_p
-        fvg_gap_p = v3_low_p - v1_high_p if fvg_bullish_p else (v1_low_p - v3_high_p if fvg_bearish_p else 0)
-        fvg_valido_p = (fvg_gap_p > 0) and (fvg_gap_p <= atr_val * MAX_VALIDEZ_ATR)
-
-        rebote_bullish = fvg_bullish_p and fvg_valido_p and (c_low <= v3_low_p) and (c_close > v1_high_p)
-        rebote_bearish = fvg_bearish_p and fvg_valido_p and (c_high >= v3_high_p) and (c_close < v1_low_p)
-
-        tendencia_alcista = c_close > ema_val
-        tendencia_bajista = c_close < ema_val
-        volumen_alto = c_vol > (df['vol_sma'].iloc[-1] * 1.2)
+        # --- NUEVO FILTRO: Tamaño de la vela que rompe (%) ---
+        # Verificamos la volatilidad de las últimas 3 velas (V1, V2, V3 del FVG)
+        size_v1 = (df['high'].iloc[-3] - df['low'].iloc[-3]) / df['low'].iloc[-3] * 100
+        size_v2 = (df['high'].iloc[-2] - df['low'].iloc[-2]) / df['low'].iloc[-2] * 100
+        size_v3 = (df['high'].iloc[-1] - df['low'].iloc[-1]) / df['low'].iloc[-1] * 100
+        max_setup_size = max(size_v1, size_v2, size_v3)
+        
+        velas_tienen_rango = max_setup_size >= min_candle_size_pct
 
         clean_symbol = symbol.replace('/', '') + '.P'
         
-        # --- LOGS DE DIAGNÓSTICO (Visible en Render) ---
+        # --- LOGS DIAGNÓSTICO ---
         if clean_symbol in ['HUSDT.P', 'SKYAIUSDT.P']:
-            print(f"[{clean_symbol}] Velas actualizadas. Cierre: {c_close:.4f} | Vol Alto: {volumen_alto} | FVG Valido: {fvg_valido}")
+            print(f"[{clean_symbol} | {timeframe}] Rango Max FVG: {max_setup_size:.2f}% (Req: {min_candle_size_pct}%) | Valido: {velas_tienen_rango}")
 
-        # --- DISPAROS A TELEGRAM ---
-        if fvg_bullish and fvg_valido and swept_low and oversold:
+        # --- DISPAROS REVERSIÓN ---
+        if fvg_bullish and fvg_valido and swept_low and oversold and velas_tienen_rango:
             sl = v1_high * (1 - SL_PERCENT)
             tp1 = v1_high * (1 + TP1_PERCENT)
-            msg = f"🟢 *LONG · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v1_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
+            msg = f"🟢 *LONG · FVG ({timeframe})*\nPar: `{clean_symbol}`\nRango Vela: `{max_setup_size:.2f}%`\nEntrada: `{v1_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
-            print(f"¡SEÑAL LONG ENVIADA A TELEGRAM PARA {clean_symbol}!")
             
-        if fvg_bearish and fvg_valido and swept_high and overbought:
+        if fvg_bearish and fvg_valido and swept_high and overbought and velas_tienen_rango:
             sl = v1_low * (1 + SL_PERCENT)
             tp1 = v1_low * (1 - TP1_PERCENT)
-            msg = f"🔴 *SHORT · FVG (Reversión)*\nPar: `{clean_symbol}`\nEntrada: `{v3_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
+            msg = f"🔴 *SHORT · FVG ({timeframe})*\nPar: `{clean_symbol}`\nRango Vela: `{max_setup_size:.2f}%`\nEntrada: `{v3_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
             send_telegram(msg)
-            print(f"¡SEÑAL SHORT ENVIADA A TELEGRAM PARA {clean_symbol}!")
-
-        if rebote_bullish and tendencia_alcista and volumen_alto:
-            sl = v1_high_p * (1 - SL_PERCENT)
-            tp1 = c_close * (1 + TP1_PERCENT)
-            msg = f"🟢 *LONG · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v1_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            send_telegram(msg)
-            print(f"¡SEÑAL LONG TENDENCIA ENVIADA PARA {clean_symbol}!")
-
-        if rebote_bearish and tendencia_bajista and volumen_alto:
-            sl = v1_low_p * (1 + SL_PERCENT)
-            tp1 = c_close * (1 - TP1_PERCENT)
-            msg = f"🔴 *SHORT · FVG (Tendencia)*\nPar: `{clean_symbol}`\nRebote: `{v3_high_p:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
-            send_telegram(msg)
-            print(f"¡SEÑAL SHORT TENDENCIA ENVIADA PARA {clean_symbol}!")
 
     except Exception as e:
-        print(f"Error procesando {symbol}: {e}")
+        pass
 
 async def bucle_bot():
-    print("Bot sincronizado a temporalidad de 5 minutos iniciado.")
-    send_telegram("⏰ *Bot Inicializado*\nSe ha aplicado la corrección para leer las velas correctamente cerradas.")
+    send_telegram("⏰ *Bot Reversión Iniciado*\nEscaneando 5m (Rango > 3.8%) y 15m (Rango > 5.1%).")
     
     while True:
         now = datetime.now(timezone.utc)
-        seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
         
-        # Esperamos al cierre + 3 segundos de margen para que Binance actualice su base de datos
-        sleep_time = seconds_to_next_5m + 3
+        # Calcular segundos para el próximo múltiplo de 5 minutos
+        seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
+        sleep_time = seconds_to_next_5m + 3 # Margen de 3 segundos para asegurar cierre
+        
         if sleep_time < 5:
             sleep_time += 300
             
         await asyncio.sleep(sleep_time)
         
+        # Volvemos a leer la hora tras despertar para saber exactamente en qué minuto estamos
+        now_awoke = datetime.now(timezone.utc)
+        es_cuarto_de_hora = (now_awoke.minute % 15 == 0)
+        
+        print(f"[{now_awoke.strftime('%H:%M:%S')}] Iniciando escaneo de 5m...")
         for symbol in SYMBOLS:
-            run_strategy_for_symbol(symbol)
-            await asyncio.sleep(0.05) # Pequeña pausa para no saturar la API
+            run_reversion_strategy(symbol, '5m', 3.8)
+            await asyncio.sleep(0.05)
+            
+        if es_cuarto_de_hora:
+            print(f"[{now_awoke.strftime('%H:%M:%S')}] Iniciando escaneo de 15m...")
+            for symbol in SYMBOLS:
+                run_reversion_strategy(symbol, '15m', 5.1)
+                await asyncio.sleep(0.05)
 
 async def handle_ping(request):
-    return web.Response(text="Bot activo y analizando velas de forma correcta.")
+    return web.Response(text="Bot Reversión Activo (5m y 15m)")
 
 async def main():
     app = web.Application()
