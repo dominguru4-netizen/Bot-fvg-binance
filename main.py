@@ -163,13 +163,13 @@ async def bucle_bot():
         
         print(f"[{now_awoke.strftime('%H:%M:%S')}] Iniciando escaneo de 5m...")
         for symbol in SYMBOLS:
-            run_reversion_strategy(symbol, '5m', 3.8)
+            run_reversion_strategy(symbol, '5m', 2)
             await asyncio.sleep(0.05)
             
         if es_cuarto_de_hora:
             print(f"[{now_awoke.strftime('%H:%M:%S')}] Iniciando escaneo de 15m...")
             for symbol in SYMBOLS:
-                run_reversion_strategy(symbol, '15m', 5.1)
+                run_reversion_strategy(symbol, '15m', 3)
                 await asyncio.sleep(0.05)
 
 async def handle_ping(request):
