@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS GLOBALES (FVG V3 - TRADINGVIEW)
+# PARÁMETROS GLOBALES (FVG V3 - SOLO 3M)
 # ==========================================
 # Señal BB + RSI
 BB_LENGTH = 20
@@ -30,7 +30,7 @@ MAX_VALIDEZ_ATR = 10.0  # Banda máx. de validez (x ATR)
 # Gestión de Riesgo
 SL_PERCENT = 0.050      # 5%
 TP1_PERCENT = 0.007     # 0.7%
-TP2_PERCENT = 0.015     # 1.5% (Mantenemos tu escalado de TP)
+TP2_PERCENT = 0.015     # 1.5%
 
 # Registro para evitar duplicados en la misma vela
 sent_signals = set()
@@ -165,7 +165,6 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     fvg_bearish = v3_high < v1_low
     fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
     
-    # Cualquier hueco mayor a 0 es válido, pero comprobamos que no se aleje más de 10 ATR
     fvg_valido = (fvg_gap > 0) and (abs(current_close - ((v1_high + v3_low) / 2.0 if fvg_bullish else (v3_high + v1_low) / 2.0)) <= (atr_val * MAX_VALIDEZ_ATR))
 
     # --- 5. TAMAÑO DE VELA IMPULSIVA (%) ---
@@ -189,7 +188,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 + TP2_PERCENT)
 
       msg = (
-          f"🟢 *LONG · FVG V3 ({timeframe})*\n"
+          f"🟢 *LONG · FVG V3 (3m)*\n"
           f"Par: `{clean_symbol}`\n"
           f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
@@ -212,7 +211,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 - TP2_PERCENT)
 
       msg = (
-          f"🔴 *SHORT · FVG V3 ({timeframe})*\n"
+          f"🔴 *SHORT · FVG V3 (3m)*\n"
           f"Par: `{clean_symbol}`\n"
           f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
@@ -227,37 +226,30 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       sent_signals.clear()
 
   except Exception as e:
-    print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
+    print(f"⚠️ Error procesando {symbol} en 3m: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Sincronizado*\nEscaneando 5m y 15m con BB, RSI, Sweep y ATR.")
+  send_telegram("⏰ *Bot FVG V3 Configurado en 3m*\nEscaneando exclusivamente en temporalidad de 3 minutos.")
 
   while True:
     now = datetime.now(timezone.utc)
-    seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
-    sleep_time = seconds_to_next_5m + 2
+    seconds_to_next_3m = 180 - ((now.minute % 3) * 60 + now.second)
+    sleep_time = seconds_to_next_3m + 2
 
     if sleep_time < 5:
-      sleep_time += 300
+      sleep_time += 180
 
     await asyncio.sleep(sleep_time)
 
     now_awoke = datetime.now(timezone.utc)
-    es_cuarto_de_hora = now_awoke.minute % 15 == 0
-
-    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...", flush=True)
+    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 3m...", flush=True)
+    
     for symbol in SYMBOLS:
-      run_reversion_strategy(symbol, "5m", 2.0)
+      run_reversion_strategy(symbol, "3m", 1.5)
       await asyncio.sleep(0.04)
 
-    if es_cuarto_de_hora:
-      print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...", flush=True)
-      for symbol in SYMBOLS:
-        run_reversion_strategy(symbol, "15m", 3.0)
-        await asyncio.sleep(0.04)
-
 async def handle_ping(request):
-  return web.Response(text="Bot FVG V3 Activo")
+  return web.Response(text="Bot FVG V3 Activo (3m)")
 
 async def main():
   app = web.Application()
