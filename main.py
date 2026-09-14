@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
 import os
-import time
 from aiohttp import web
 import ccxt
 import pandas as pd
@@ -17,6 +16,7 @@ TELEGRAM_CHAT_ID = "2118999160"
 # PARÁMETROS GLOBALES
 # ==========================================
 LIMIT_SWEEP = 96
+RECENT_WINDOW = 35 # Margen amplio para detectar el barrido y el volumen previo
 SL_PERCENT = 0.050
 TP1_PERCENT = 0.007
 MAX_VALIDEZ_ATR = 10.0
@@ -72,7 +72,6 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df = pd.DataFrame(
         bars, columns=["time", "open", "high", "low", "close", "volume"]
     )
-
     df = df.iloc[:-1].copy()
 
     # --- INDICADORES ---
@@ -94,22 +93,19 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df["atr"] = true_range.rolling(window=14).mean()
     atr_val = df["atr"].iloc[-1]
 
-    # --- CONTEXTO: ENTRADA DE VOLUMEN RECIENTE (Últimas 15 velas) ---
-    recent_rsi_min = df["rsi"].iloc[-15:].min()
-    recent_rsi_max = df["rsi"].iloc[-15:].max()
-    bb_lower_broken = (df["low"].iloc[-15:] <= df["bb_lower"].iloc[-15:]).any()
-    bb_upper_broken = (df["high"].iloc[-15:] >= df["bb_upper"].iloc[-15:]).any()
+    # --- CONTEXTO: SWING RECIENTE (BARRIDO + VOLUMEN) ---
+    min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
+    max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
+    
+    # ¿Hubo barrido en algún momento del swing reciente?
+    swept_low = df["low"].iloc[-RECENT_WINDOW:].min() < min_previo
+    swept_high = df["high"].iloc[-RECENT_WINDOW:].max() > max_previo
 
-    condicion_volumen_long = (recent_rsi_min < 35) or bb_lower_broken
-    condicion_volumen_short = (recent_rsi_max > 65) or bb_upper_broken
+    # ¿Entró volumen extremo en algún momento de ese mismo swing?
+    condicion_volumen_long = (df["rsi"].iloc[-RECENT_WINDOW:].min() < 35) or (df["low"].iloc[-RECENT_WINDOW:] <= df["bb_lower"].iloc[-RECENT_WINDOW:]).any()
+    condicion_volumen_short = (df["rsi"].iloc[-RECENT_WINDOW:].max() > 65) or (df["high"].iloc[-RECENT_WINDOW:] >= df["bb_upper"].iloc[-RECENT_WINDOW:]).any()
 
-    # --- CONTEXTO: BARRIDO DE LIQUIDEZ RECIENTE (Últimas 10 velas) ---
-    min_previo = df["low"].iloc[-(LIMIT_SWEEP + 10) : -10].min()
-    max_previo = df["high"].iloc[-(LIMIT_SWEEP + 10) : -10].max()
-    swept_low = df["low"].iloc[-10:].min() < min_previo
-    swept_high = df["high"].iloc[-10:].max() > max_previo
-
-    # --- GATILLO: FVG (Últimas 3 velas de ahora mismo) ---
+    # --- GATILLO: FVG ACTUAL (Últimas 3 velas) ---
     v1_high = df["high"].iloc[-3]
     v1_low = df["low"].iloc[-3]
     v3_low = df["low"].iloc[-1]
@@ -129,22 +125,25 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- COMPROBACIÓN FINAL Y DISPARO ---
+    # --- DISPARO DE SEÑAL Y CÁLCULOS MATEMÁTICOS CORREGIDOS ---
+    
+    # LÓGICA LONG: ENTRADA v1_high, SL v1_low, TP v1_high
     if fvg_bullish and fvg_valido and swept_low and condicion_volumen_long and velas_tienen_rango:
-      sl = v1_high * (1 - SL_PERCENT)
+      sl = v1_low * (1 - SL_PERCENT)
       tp1 = v1_high * (1 + TP1_PERCENT)
       msg = (
           f"🟢 *LONG · FVG ({timeframe})*\nPar: `{clean_symbol}`\nRango Vela: "
-          f"`{max_setup_size:.2f}%`\nEntrada: `{v1_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
+          f"`{max_setup_size:.2f}%`\nEntrada (Objective): `{v1_high:.4f}`\nSL (v1_low-5%): `{sl:.4f}` | TP (v1_high+0.7%): `{tp1:.4f}`"
       )
       send_telegram(msg)
 
+    # LÓGICA SHORT: ENTRADA v1_low, SL v1_high, TP v1_low
     if fvg_bearish and fvg_valido and swept_high and condicion_volumen_short and velas_tienen_rango:
-      sl = v1_low * (1 + SL_PERCENT)
+      sl = v1_high * (1 + SL_PERCENT)
       tp1 = v1_low * (1 - TP1_PERCENT)
       msg = (
           f"🔴 *SHORT · FVG ({timeframe})*\nPar: `{clean_symbol}`\nRango Vela: "
-          f"`{max_setup_size:.2f}%`\nEntrada: `{v3_high:.4f}`\nSL: `{sl:.4f}` | TP: `{tp1:.4f}`"
+          f"`{max_setup_size:.2f}%`\nEntrada (Objective): `{v1_low:.4f}`\nSL (v1_high+5%): `{sl:.4f}` | TP (v1_low-0.7%): `{tp1:.4f}`"
       )
       send_telegram(msg)
 
@@ -152,7 +151,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot Reversión Activo*\nEscaneando 5m (Rango > 2.0%) y 15m (Rango > 3.0%).")
+  send_telegram("⏰ *Bot Reversión Activo (Lógica Flexible)*\nEscaneando 5m y 15m.")
 
   while True:
     now = datetime.now(timezone.utc)
@@ -179,7 +178,7 @@ async def bucle_bot():
         await asyncio.sleep(0.05)
 
 async def handle_ping(request):
-  return web.Response(text="Bot Reversión Activo (5m y 15m)")
+  return web.Response(text="Bot Reversión Activo")
 
 async def main():
   app = web.Application()
