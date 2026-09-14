@@ -13,16 +13,16 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS GLOBALES
+# PARÁMETROS GLOBALES (ESTRATEGIA FVG V3)
 # ==========================================
 LIMIT_SWEEP = 96
-RECENT_WINDOW = 35
+RECENT_WINDOW = 20
 SL_PERCENT = 0.050
 TP1_PERCENT = 0.007  # 0.7%
 TP2_PERCENT = 0.015  # 1.5%
 MAX_VALIDEZ_ATR = 10.0
 
-# Registro en memoria para evitar alertas duplicadas por vela
+# Registro para evitar duplicados en la misma vela
 sent_signals = set()
 
 SYMBOLS = [
@@ -73,29 +73,19 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     if not bars or len(bars) < 120:
       return
 
+    # Mantenemos las velas cerradas (v1, v2, v3)
     df = pd.DataFrame(
         bars, columns=["time", "open", "high", "low", "close", "volume"]
     )
     df = df.iloc[:-1].copy()
 
-    # Identificador único de vela para evitar duplicados
+    # Evita duplicar alertas en la misma vela
     last_candle_time = df["time"].iloc[-1]
     signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
     if signal_key in sent_signals:
       return
 
-    # --- INDICADORES ---
-    delta = df["close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    sma = df["close"].rolling(window=20).mean()
-    std = df["close"].rolling(window=20).std()
-    df["bb_lower"] = sma - (std * 2.0)
-    df["bb_upper"] = sma + (std * 2.0)
-
+    # --- ATR ---
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
@@ -103,17 +93,14 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df["atr"] = true_range.rolling(window=14).mean()
     atr_val = df["atr"].iloc[-1]
 
-    # --- CONTEXTO: SWING RECIENTE ---
+    # --- FILTRO SWEEP (BARRIDO DE LIQUIDEZ RECIENTE) ---
     min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
     max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
     
     swept_low = df["low"].iloc[-RECENT_WINDOW:].min() < min_previo
     swept_high = df["high"].iloc[-RECENT_WINDOW:].max() > max_previo
 
-    condicion_volumen_long = (df["rsi"].iloc[-RECENT_WINDOW:].min() < 35) or (df["low"].iloc[-RECENT_WINDOW:] <= df["bb_lower"].iloc[-RECENT_WINDOW:]).any()
-    condicion_volumen_short = (df["rsi"].iloc[-RECENT_WINDOW:].max() > 65) or (df["high"].iloc[-RECENT_WINDOW:] >= df["bb_upper"].iloc[-RECENT_WINDOW:]).any()
-
-    # --- GATILLO: FVG ACTUAL ---
+    # --- RECUADRO FVG (Velas v1, v2, v3) ---
     v1_high = df["high"].iloc[-3]
     v1_low = df["low"].iloc[-3]
     v3_low = df["low"].iloc[-1]
@@ -124,7 +111,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
     fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-    # --- TAMAÑO DE VELA DE ROTURA (%) ---
+    # --- TAMAÑO DE VELA IMPULSIVA (%) ---
     size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
     size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
     size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
@@ -133,10 +120,10 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- LÓGICA LONG ---
-    if fvg_bullish and fvg_valido and swept_low and condicion_volumen_long and velas_tienen_rango:
-      fvg_mid = (v3_low + v1_high) / 2.0  # Entrada 1: 50% del FVG
-      fvg_final = v1_high                 # Entrada 2: Final del FVG
+    # --- SEÑAL LONG (SWEEP + FVG V3) ---
+    if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
+      fvg_mid = (v3_low + v1_high) / 2.0  # Entrada 1: 50% FVG
+      fvg_final = v1_high                 # Entrada 2: Final FVG
       sl = v1_low * (1 - SL_PERCENT)
       tp1 = fvg_final * (1 + TP1_PERCENT)
       tp2 = fvg_final * (1 + TP2_PERCENT)
@@ -153,10 +140,10 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # --- LÓGICA SHORT ---
-    if fvg_bearish and fvg_valido and swept_high and condicion_volumen_short and velas_tienen_rango:
-      fvg_mid = (v1_low + v3_high) / 2.0  # Entrada 1: 50% del FVG
-      fvg_final = v1_low                 # Entrada 2: Final del FVG
+    # --- SEÑAL SHORT (SWEEP + FVG V3) ---
+    if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
+      fvg_mid = (v1_low + v3_high) / 2.0  # Entrada 1: 50% FVG
+      fvg_final = v1_low                 # Entrada 2: Final FVG
       sl = v1_high * (1 + SL_PERCENT)
       tp1 = fvg_final * (1 - TP1_PERCENT)
       tp2 = fvg_final * (1 - TP2_PERCENT)
@@ -173,7 +160,6 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # Limpieza periódica de memoria para no acumular claves viejas
     if len(sent_signals) > 1000:
       sent_signals.clear()
 
@@ -181,12 +167,12 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot Reversión Activo (Filtro Duplicados + Doble Entrada)*\nEscaneando 5m y 15m.")
+  send_telegram("⏰ *Bot FVG V3 Activo (5m & 15m)*\nSweep + FVG + Alerta Inmediata.")
 
   while True:
     now = datetime.now(timezone.utc)
     seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
-    sleep_time = seconds_to_next_5m + 3
+    sleep_time = seconds_to_next_5m + 2
 
     if sleep_time < 5:
       sleep_time += 300
@@ -199,16 +185,16 @@ async def bucle_bot():
     print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...", flush=True)
     for symbol in SYMBOLS:
       run_reversion_strategy(symbol, "5m", 2.0)
-      await asyncio.sleep(0.05)
+      await asyncio.sleep(0.04)
 
     if es_cuarto_de_hora:
       print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...", flush=True)
       for symbol in SYMBOLS:
         run_reversion_strategy(symbol, "15m", 3.0)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.04)
 
 async def handle_ping(request):
-  return web.Response(text="Bot Reversión Activo")
+  return web.Response(text="Bot FVG V3 Activo")
 
 async def main():
   app = web.Application()
