@@ -13,19 +13,29 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS GLOBALES (ESTRATEGIA FVG V3)
+# PARÁMETROS GLOBALES (FVG V3 - TRADINGVIEW)
 # ==========================================
+# Señal BB + RSI
+BB_LENGTH = 20
+BB_STD = 2.0
+RSI_LENGTH = 14
+RSI_OVERBOUGHT = 65
+RSI_OVERSOLD = 35
+
+# Barrido y FVG
 LIMIT_SWEEP = 96
 RECENT_WINDOW = 20
-SL_PERCENT = 0.050
-TP1_PERCENT = 0.007  # 0.7%
-TP2_PERCENT = 0.015  # 1.5%
-MAX_VALIDEZ_ATR = 10.0
+MAX_VALIDEZ_ATR = 10.0  # Banda máx. de validez (x ATR)
+
+# Gestión de Riesgo
+SL_PERCENT = 0.050      # 5%
+TP1_PERCENT = 0.007     # 0.7%
+TP2_PERCENT = 0.015     # 1.5% (Mantenemos tu escalado de TP)
 
 # Registro para evitar duplicados en la misma vela
 sent_signals = set()
 
-# Fusión de ambas listas (elimina repetidos automáticamente)
+# Fusión de listas de símbolos
 SYMBOLS = list(set([
     # --- Lista Original ---
     "H/USDT", "SKYAI/USDT", "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
@@ -108,7 +118,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     if signal_key in sent_signals:
       return
 
-    # --- ATR ---
+    # --- 1. INDICADORES TÉCNICOS (ATR, BB, RSI) ---
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
@@ -116,14 +126,36 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df["atr"] = true_range.rolling(window=14).mean()
     atr_val = df["atr"].iloc[-1]
 
-    # --- FILTRO SWEEP ---
+    # Bollinger Bands (20, 2)
+    df["sma"] = df["close"].rolling(window=BB_LENGTH).mean()
+    df["std"] = df["close"].rolling(window=BB_LENGTH).std()
+    df["upper_bb"] = df["sma"] + (BB_STD * df["std"])
+    df["lower_bb"] = df["sma"] - (BB_STD * df["std"])
+
+    # RSI (14)
+    delta = df["close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    # --- 2. FILTRO SEÑAL BB + RSI ---
+    current_close = df["close"].iloc[-1]
+    current_rsi = df["rsi"].iloc[-1]
+    lower_bb_val = df["lower_bb"].iloc[-1]
+    upper_bb_val = df["upper_bb"].iloc[-1]
+
+    signal_long_bb_rsi = (current_close <= lower_bb_val) or (current_rsi <= RSI_OVERSOLD)
+    signal_short_bb_rsi = (current_close >= upper_bb_val) or (current_rsi >= RSI_OVERBOUGHT)
+
+    # --- 3. BARRIDO DE LIQUIDEZ (96 velas, por cierre) ---
     min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
     max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
     
-    swept_low = df["low"].iloc[-RECENT_WINDOW:].min() < min_previo
-    swept_high = df["high"].iloc[-RECENT_WINDOW:].max() > max_previo
+    swept_low = df["close"].iloc[-RECENT_WINDOW:].min() < min_previo
+    swept_high = df["close"].iloc[-RECENT_WINDOW:].max() > max_previo
 
-    # --- RECUADRO FVG (Velas v1, v2, v3) ---
+    # --- 4. FAIR VALUE GAP (FVG) Y VALIDACIÓN DE DISTANCIA (10 ATR) ---
     v1_high = df["high"].iloc[-3]
     v1_low = df["low"].iloc[-3]
     v3_low = df["low"].iloc[-1]
@@ -132,9 +164,11 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     fvg_bullish = v3_low > v1_high
     fvg_bearish = v3_high < v1_low
     fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
-    fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
+    
+    # Cualquier hueco mayor a 0 es válido, pero comprobamos que no se aleje más de 10 ATR
+    fvg_valido = (fvg_gap > 0) and (abs(current_close - ((v1_high + v3_low) / 2.0 if fvg_bullish else (v3_high + v1_low) / 2.0)) <= (atr_val * MAX_VALIDEZ_ATR))
 
-    # --- TAMAÑO DE VELA IMPULSIVA (%) ---
+    # --- 5. TAMAÑO DE VELA IMPULSIVA (%) ---
     size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
     size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
     size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
@@ -144,7 +178,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     clean_symbol = symbol.replace("/", "") + ".P"
 
     # --- SEÑAL LONG ---
-    if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
+    if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango and signal_long_bb_rsi:
       fvg_bottom = v1_high
       fvg_top = v3_low
       fvg_mid = (fvg_bottom + fvg_top) / 2.0  
@@ -155,19 +189,19 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 + TP2_PERCENT)
 
       msg = (
-          f"🟢 *LONG · FVG ({timeframe})*\n"
+          f"🟢 *LONG · FVG V3 ({timeframe})*\n"
           f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%`\n"
+          f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
           f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
           f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
-          f"🛑 SL: `{sl:.4f}`"
+          f"🛑 SL (5%): `{sl:.4f}`"
       )
       send_telegram(msg)
       sent_signals.add(signal_key)
 
     # --- SEÑAL SHORT ---
-    if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
+    if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango and signal_short_bb_rsi:
       fvg_bottom = v3_high
       fvg_top = v1_low
       fvg_mid = (fvg_bottom + fvg_top) / 2.0  
@@ -178,13 +212,13 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 - TP2_PERCENT)
 
       msg = (
-          f"🔴 *SHORT · FVG ({timeframe})*\n"
+          f"🔴 *SHORT · FVG V3 ({timeframe})*\n"
           f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%`\n"
+          f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
           f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
           f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
-          f"🛑 SL: `{sl:.4f}`"
+          f"🛑 SL (5%): `{sl:.4f}`"
       )
       send_telegram(msg)
       sent_signals.add(signal_key)
@@ -196,7 +230,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Activo (Listas Fusionadas)*\nEscaneando 5m y 15m.")
+  send_telegram("⏰ *Bot FVG V3 Sincronizado*\nEscaneando 5m y 15m con BB, RSI, Sweep y ATR.")
 
   while True:
     now = datetime.now(timezone.utc)
