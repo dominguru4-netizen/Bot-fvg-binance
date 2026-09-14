@@ -21,7 +21,6 @@ SL_PERCENT = 0.050
 TP1_PERCENT = 0.007
 MAX_VALIDEZ_ATR = 10.0
 
-# LISTA DE PARES DE FUTUROS
 SYMBOLS = [
     "H/USDT", "SKYAI/USDT", "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
@@ -62,7 +61,7 @@ def send_telegram(message):
   try:
     requests.post(url, json=payload, timeout=10)
   except Exception as e:
-    print(f"Error Telegram: {e}")
+    print(f"Error Telegram: {e}", flush=True)
 
 def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
   try:
@@ -74,7 +73,6 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
         bars, columns=["time", "open", "high", "low", "close", "volume"]
     )
 
-    # Eliminar la vela que aún se está formando
     df = df.iloc[:-1].copy()
 
     # --- INDICADORES ---
@@ -94,12 +92,24 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     low_close = (df["low"] - df["close"].shift()).abs()
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr"] = true_range.rolling(window=14).mean()
-
-    c_high = df["high"].iloc[-1]
-    c_low = df["low"].iloc[-1]
     atr_val = df["atr"].iloc[-1]
 
-    # --- FVG REVERSIÓN ---
+    # --- CONTEXTO: ENTRADA DE VOLUMEN RECIENTE (Últimas 15 velas) ---
+    recent_rsi_min = df["rsi"].iloc[-15:].min()
+    recent_rsi_max = df["rsi"].iloc[-15:].max()
+    bb_lower_broken = (df["low"].iloc[-15:] <= df["bb_lower"].iloc[-15:]).any()
+    bb_upper_broken = (df["high"].iloc[-15:] >= df["bb_upper"].iloc[-15:]).any()
+
+    condicion_volumen_long = (recent_rsi_min < 35) or bb_lower_broken
+    condicion_volumen_short = (recent_rsi_max > 65) or bb_upper_broken
+
+    # --- CONTEXTO: BARRIDO DE LIQUIDEZ RECIENTE (Últimas 10 velas) ---
+    min_previo = df["low"].iloc[-(LIMIT_SWEEP + 10) : -10].min()
+    max_previo = df["high"].iloc[-(LIMIT_SWEEP + 10) : -10].max()
+    swept_low = df["low"].iloc[-10:].min() < min_previo
+    swept_high = df["high"].iloc[-10:].max() > max_previo
+
+    # --- GATILLO: FVG (Últimas 3 velas de ahora mismo) ---
     v1_high = df["high"].iloc[-3]
     v1_low = df["low"].iloc[-3]
     v3_low = df["low"].iloc[-1]
@@ -107,22 +117,10 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
 
     fvg_bullish = v3_low > v1_high
     fvg_bearish = v3_high < v1_low
-    fvg_gap = (
-        v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0)
-    )
+    fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
     fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-    # Filtro de barrido
-    min_previo = df["low"].iloc[-(LIMIT_SWEEP + 5) : -5].min()
-    max_previo = df["high"].iloc[-(LIMIT_SWEEP + 5) : -5].max()
-    swept_low = df["low"].iloc[-5:].min() < min_previo
-    swept_high = df["high"].iloc[-5:].max() > max_previo
-
-    # Extremos RSI/BB
-    oversold = (df["rsi"].iloc[-1] < 35) or (c_low <= df["bb_lower"].iloc[-1])
-    overbought = (df["rsi"].iloc[-1] > 65) or (c_high >= df["bb_upper"].iloc[-1])
-
-    # --- TAMAÑO DE VELA (%) ---
+    # --- REQUISITO: TAMAÑO DE VELA DE ROTURA (%) ---
     size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
     size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
     size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
@@ -131,8 +129,8 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- DISPAROS A TELEGRAM ---
-    if fvg_bullish and fvg_valido and swept_low and oversold and velas_tienen_rango:
+    # --- COMPROBACIÓN FINAL Y DISPARO ---
+    if fvg_bullish and fvg_valido and swept_low and condicion_volumen_long and velas_tienen_rango:
       sl = v1_high * (1 - SL_PERCENT)
       tp1 = v1_high * (1 + TP1_PERCENT)
       msg = (
@@ -141,7 +139,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       )
       send_telegram(msg)
 
-    if fvg_bearish and fvg_valido and swept_high and overbought and velas_tienen_rango:
+    if fvg_bearish and fvg_valido and swept_high and condicion_volumen_short and velas_tienen_rango:
       sl = v1_low * (1 + SL_PERCENT)
       tp1 = v1_low * (1 - TP1_PERCENT)
       msg = (
@@ -151,8 +149,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
 
   except Exception as e:
-    # CHIVATO DE ERRORES: Render mostrará esto si la moneda falla.
-    print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}")
+    print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
   send_telegram("⏰ *Bot Reversión Activo*\nEscaneando 5m (Rango > 2.0%) y 15m (Rango > 3.0%).")
@@ -170,16 +167,14 @@ async def bucle_bot():
     now_awoke = datetime.now(timezone.utc)
     es_cuarto_de_hora = now_awoke.minute % 15 == 0
 
-    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...")
+    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...", flush=True)
     for symbol in SYMBOLS:
-      # PORCENTAJE 2% PARA 5 MINUTOS
       run_reversion_strategy(symbol, "5m", 2.0)
       await asyncio.sleep(0.05)
 
     if es_cuarto_de_hora:
-      print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...")
+      print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...", flush=True)
       for symbol in SYMBOLS:
-        # PORCENTAJE 3% PARA 15 MINUTOS
         run_reversion_strategy(symbol, "15m", 3.0)
         await asyncio.sleep(0.05)
 
