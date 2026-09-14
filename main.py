@@ -73,13 +73,11 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     if not bars or len(bars) < 120:
       return
 
-    # Mantenemos las velas cerradas (v1, v2, v3)
     df = pd.DataFrame(
         bars, columns=["time", "open", "high", "low", "close", "volume"]
     )
     df = df.iloc[:-1].copy()
 
-    # Evita duplicar alertas en la misma vela
     last_candle_time = df["time"].iloc[-1]
     signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
     if signal_key in sent_signals:
@@ -93,7 +91,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df["atr"] = true_range.rolling(window=14).mean()
     atr_val = df["atr"].iloc[-1]
 
-    # --- FILTRO SWEEP (BARRIDO DE LIQUIDEZ RECIENTE) ---
+    # --- FILTRO SWEEP ---
     min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
     max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
     
@@ -120,10 +118,13 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- SEÑAL LONG (SWEEP + FVG V3) ---
+    # --- SEÑAL LONG (Límites exactos del recuadro FVG) ---
     if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
-      fvg_mid = (v3_low + v1_high) / 2.0  # Entrada 1: 50% FVG
-      fvg_final = v1_high                 # Entrada 2: Final FVG
+      fvg_bottom = v1_high
+      fvg_top = v3_low
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  # Entrada 1: 50% FVG
+      fvg_final = fvg_bottom                 # Entrada 2: Final FVG (Borde del recuadro)
+      
       sl = v1_low * (1 - SL_PERCENT)
       tp1 = fvg_final * (1 + TP1_PERCENT)
       tp2 = fvg_final * (1 + TP2_PERCENT)
@@ -140,10 +141,13 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # --- SEÑAL SHORT (SWEEP + FVG V3) ---
+    # --- SEÑAL SHORT (Límites exactos del recuadro FVG) ---
     if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
-      fvg_mid = (v1_low + v3_high) / 2.0  # Entrada 1: 50% FVG
-      fvg_final = v1_low                 # Entrada 2: Final FVG
+      fvg_bottom = v3_high
+      fvg_top = v1_low
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  # Entrada 1: 50% FVG
+      fvg_final = fvg_top                    # Entrada 2: Final FVG (Borde del recuadro)
+      
       sl = v1_high * (1 + SL_PERCENT)
       tp1 = fvg_final * (1 - TP1_PERCENT)
       tp2 = fvg_final * (1 - TP2_PERCENT)
@@ -167,7 +171,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Activo (5m & 15m)*\nSweep + FVG + Alerta Inmediata.")
+  send_telegram("⏰ *Bot FVG V3 Activo (Precios FVG Corregidos)*\nEscaneando 5m y 15m.")
 
   while True:
     now = datetime.now(timezone.utc)
