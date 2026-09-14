@@ -25,7 +25,9 @@ MAX_VALIDEZ_ATR = 10.0
 # Registro para evitar duplicados en la misma vela
 sent_signals = set()
 
-SYMBOLS = [
+# Fusión de ambas listas (elimina repetidos automáticamente)
+SYMBOLS = list(set([
+    # --- Lista Original ---
     "H/USDT", "SKYAI/USDT", "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
     "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT", 
@@ -48,8 +50,31 @@ SYMBOLS = [
     "UNFI/USDT", "LIT/USDT", "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT", 
     "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT", "BSW/USDT", "CVX/USDT", 
     "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT", "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT", 
-    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT"
-]
+    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT",
+    
+    # --- Lista Nueva ---
+    "0G/USDT", "1000BONK/USDT", "1000PEPE/USDT", "AAVE/USDT", "ACU/USDT", "ADA/USDT",
+    "AERO/USDT", "AIA/USDT", "AKE/USDT", "ALGO/USDT", "APE/USDT", "APT/USDT", "ARB/USDT",
+    "ASR/USDT", "ASTER/USDT", "ATH/USDT", "ATOM/USDT", "AVAX/USDT", "AVNT/USDT", "BANK/USDT",
+    "BB/USDT", "BEAT/USDT", "BIO/USDT", "BNB/USDT", "BOME/USDT", "BROCCOLIF3B/USDT", "BSV/USDT",
+    "BTC/USDT", "B/USDT", "C98/USDT", "CAKE/USDT", "CC/USDT", "CELR/USDT", "CHIP/USDT", "CHR/USDT",
+    "CHZ/USDT", "COAI/USDT", "CRV/USDT", "DASH/USDT", "DEXE/USDT", "DIA/USDT", "DOT/USDT",
+    "DYDX/USDT", "EIGEN/USDT", "ELSA/USDT", "ENS/USDT", "ETC/USDT", "ETHFI/USDT", "ETH/USDT",
+    "FARTCOIN/USDT", "FF/USDT", "FIGHT/USDT", "FIL/USDT", "FLUX/USDT", "FOGO/USDT", "GENIUS/USDT",
+    "GIGGLE/USDT", "GMX/USDT", "GRASS/USDT", "GRIFFAIN/USDT", "GRT/USDT", "GUN/USDT", "GWEI/USDT",
+    "HBAR/USDT", "H/USDT", "HYPE/USDT", "ICNT/USDT", "ICP/USDT", "ID/USDT", "INX/USDT", "IOTA/USDT",
+    "JASMY/USDT", "JOE/USDT", "JTO/USDT", "JUP/USDT", "KAS/USDT", "KAT/USDT", "KITE/USDT",
+    "LAYER/USDT", "LDO/USDT", "LINK/USDT", "LIT/USDT", "LTC/USDT", "MANA/USDT", "MANTRA/USDT",
+    "METIS/USDT", "MET/USDT", "MON/USDT", "MORPHO/USDT", "MOVR/USDT", "MUBARAK/USDT", "NEAR/USDT",
+    "NIGHT/USDT", "OG/USDT", "ONDO/USDT", "ONE/USDT", "ONT/USDT", "OP/USDT", "PENGU/USDT",
+    "PLUME/USDT", "POL/USDT", "PUMP/USDT", "QNT/USDT", "Q/USDT", "RAYSOL/USDT", "RENDER/USDT",
+    "RIVER/USDT", "RLC/USDT", "SAFE/USDT", "SAND/USDT", "SCRT/USDT", "SEI/USDT", "SHELL/USDT",
+    "SKL/USDT", "SKR/USDT", "SKYAI/USDT", "SKY/USDT", "SOON/USDT", "SPORTFUN/USDT", "SPX/USDT",
+    "SSV/USDT", "STRK/USDT", "STX/USDT", "SUI/USDT", "SYRUP/USDT", "TAO/USDT", "THETA/USDT",
+    "THE/USDT", "TIA/USDT", "TRB/USDT", "TRIA/USDT", "TRUMP/USDT", "TRX/USDT", "UB/USDT", "UNI/USDT",
+    "VET/USDT", "VIRTUAL/USDT", "WAXP/USDT", "WIF/USDT", "WLD/USDT", "WLFI/USDT", "XLM/USDT",
+    "XMR/USDT", "XPL/USDT", "XRP/USDT", "XVG/USDT", "ZAMA/USDT", "ZEN/USDT"
+]))
 
 exchange = ccxt.binance(
     {"enableRateLimit": True, "options": {"defaultType": "swap"}}
@@ -118,12 +143,12 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- SEÑAL LONG (Límites exactos del recuadro FVG) ---
+    # --- SEÑAL LONG ---
     if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
       fvg_bottom = v1_high
       fvg_top = v3_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  # Entrada 1: 50% FVG
-      fvg_final = fvg_bottom                 # Entrada 2: Final FVG (Borde del recuadro)
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
+      fvg_final = fvg_bottom                 
       
       sl = v1_low * (1 - SL_PERCENT)
       tp1 = fvg_final * (1 + TP1_PERCENT)
@@ -141,12 +166,12 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # --- SEÑAL SHORT (Límites exactos del recuadro FVG) ---
+    # --- SEÑAL SHORT ---
     if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
       fvg_bottom = v3_high
       fvg_top = v1_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  # Entrada 1: 50% FVG
-      fvg_final = fvg_top                    # Entrada 2: Final FVG (Borde del recuadro)
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
+      fvg_final = fvg_top                    
       
       sl = v1_high * (1 + SL_PERCENT)
       tp1 = fvg_final * (1 - TP1_PERCENT)
@@ -171,7 +196,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Activo (Precios FVG Corregidos)*\nEscaneando 5m y 15m.")
+  send_telegram("⏰ *Bot FVG V3 Activo (Listas Fusionadas)*\nEscaneando 5m y 15m.")
 
   while True:
     now = datetime.now(timezone.utc)
