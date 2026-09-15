@@ -24,6 +24,9 @@ RSI_OVERSOLD = 35
 MAX_VALIDEZ_ATR = 10.0  
 LOOKBACK_SWEEP = 40     # Velas hacia atrás para rastrear la secuencia
 
+# Filtro de tamaño mínimo para la vela de barrido (en porcentaje de cuerpo/rango)
+MIN_SWEEP_CANDLE_SIZE_PCT = 0.4  # Puedes ajustarlo si quieres que la vela sea más grande
+
 SL_PERCENT = 0.050      
 TP1_PERCENT = 0.007     
 TP2_PERCENT = 0.015     
@@ -133,7 +136,10 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     df["rsi"] = 100 - (100 / (1 + rs))
     current_close = df["close"].iloc[-1]
 
-    # --- 2. RASTREO: BARRIDO -> MITIGACIÓN CON CUERPO A FAVOR DEL BARRIDO ---
+    # Calcular tamaño de cada vela en % (cuerpo o rango total)
+    df["candle_size_pct"] = ((df["high"] - df["low"]) / df["low"]) * 100
+
+    # --- 2. RASTREO ESTRICTO DE ESTADOS (EVITA SEÑALES CRUZADAS) ---
     long_state = "NONE"
     sweep_low_long = float('inf')
 
@@ -143,27 +149,40 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     start_idx = max(0, n - LOOKBACK_SWEEP)
 
     for i in range(start_idx, n):
+        c_size = df["candle_size_pct"].iloc[i]
+
         # --- LÓGICA LONG ---
-        is_sweep_long = (df['low'].iloc[i] <= df['lower_bb'].iloc[i]) and (df['rsi'].iloc[i] <= RSI_OVERSOLD)
+        # Exigimos que toque la banda, el RSI esté en sobreventa y que la vela tenga un tamaño mínimo real
+        is_sweep_long = (
+            (df['low'].iloc[i] <= df['lower_bb'].iloc[i]) and 
+            (df['rsi'].iloc[i] <= RSI_OVERSOLD) and
+            (c_size >= MIN_SWEEP_CANDLE_SIZE_PCT)
+        )
         
         if is_sweep_long:
             long_state = "SWEEP"
-            sweep_low_long = df['low'].iloc[i]  # Guarda la línea blanca (el mínimo)
+            sweep_low_long = df['low'].iloc[i]  # Línea blanca / mínimo del barrido
+            short_state = "NONE" # Limpiamos el corto para evitar contradicciones
             
         elif long_state == "SWEEP":
-            # La vela cierra con CUERPO por DEBAJO de la línea blanca
+            # Si el precio se va muy lejos o anula, o si la vela cierra con cuerpo por debajo de la línea blanca
             if df['close'].iloc[i] < sweep_low_long:
                 long_state = "MITIGATED"
 
         # --- LÓGICA SHORT ---
-        is_sweep_short = (df['high'].iloc[i] >= df['upper_bb'].iloc[i]) and (df['rsi'].iloc[i] >= RSI_OVERBOUGHT)
+        is_sweep_short = (
+            (df['high'].iloc[i] >= df['upper_bb'].iloc[i]) and 
+            (df['rsi'].iloc[i] >= RSI_OVERBOUGHT) and
+            (c_size >= MIN_SWEEP_CANDLE_SIZE_PCT)
+        )
         
         if is_sweep_short:
             short_state = "SWEEP"
-            sweep_high_short = df['high'].iloc[i] # Guarda la línea blanca (el máximo)
+            sweep_high_short = df['high'].iloc[i] # Línea blanca / máximo del barrido
+            long_state = "NONE" # Limpiamos el largo para evitar contradicciones
             
         elif short_state == "SWEEP":
-            # La vela cierra con CUERPO por ENCIMA de la línea blanca
+            # Si la vela cierra con cuerpo por encima de la línea blanca
             if df['close'].iloc[i] > sweep_high_short:
                 short_state = "MITIGATED"
 
@@ -183,16 +202,12 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     fvg_valido = (fvg_gap > 0) and (abs(current_close - ((v1_high + v3_low) / 2.0 if fvg_bullish else (v3_high + v1_low) / 2.0)) <= (atr_val * MAX_VALIDEZ_ATR))
 
     # --- 4. TAMAÑO VELA IMPULSIVA (%) ---
-    size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
-    size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
-    size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
-    max_setup_size = max(size_v1, size_v2, size_v3)
-
+    max_setup_size = max(df["candle_size_pct"].iloc[-3], df["candle_size_pct"].iloc[-2], df["candle_size_pct"].iloc[-1])
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- 5. SEÑALES ---
-    # LONG
+    # --- 5. SEÑALES CON DIRECCIÓN DE ENTRADAS CORREGIDA ---
+    # LONG (Entradas medidas desde la base inferior del FVG hacia arriba)
     if valid_long_sequence and fvg_bullish and fvg_valido and velas_tienen_rango:
       fvg_bottom = v1_high
       fvg_top = v3_low
@@ -215,7 +230,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # SHORT
+    # SHORT (Entradas medidas desde la parte alta del FVG hacia abajo, como tus líneas azules)
     if valid_short_sequence and fvg_bearish and fvg_valido and velas_tienen_rango:
       fvg_bottom = v3_high
       fvg_top = v1_low
@@ -245,7 +260,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en 3m: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG Corregido*\nRotura con cuerpo HASTA EL FONDO (para la toma de liquidez real) activa.")
+  send_telegram("⏰ *Bot FVG Definitivo*\nFiltro de tamaño de vela de barrido y cálculo de entradas corregidos.")
 
   while True:
     now = datetime.now(timezone.utc)
@@ -263,7 +278,7 @@ async def bucle_bot():
       await asyncio.sleep(0.04)
 
 async def handle_ping(request):
-  return web.Response(text="Bot FVG Secuencia Toma Liquidez (3m) Activo")
+  return web.Response(text="Bot FVG Secuencia Definitiva (3m) Activo")
 
 async def main():
   app = web.Application()
