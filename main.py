@@ -6,30 +6,16 @@ import ccxt
 import pandas as pd
 import requests
 
-# ==========================================
-# CREDENCIALES TELEGRAM
-# ==========================================
 TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
-# ==========================================
-# PARÁMETROS CONFIGURADOS
-# ==========================================
-BB_LEN = 20
-BB_MULT = 2.0
-RSI_LEN = 14
-RSI_OB = 70.0
-RSI_OS = 30.0
-
-ATR_LEN = 14
-MIN_GAP_ATR = 0.40
-MAX_BAND_ATR = 3.0
-MAX_SWEEP_CANDLES = 96
-MAX_WAIT_FVG = 960
+BB_LEN, BB_MULT = 20, 2.0
+RSI_LEN, RSI_OB, RSI_OS = 14, 70.0, 30.0
+ATR_LEN, MIN_GAP_ATR, MAX_BAND_ATR = 14, 0.40, 3.0
+MAX_SWEEP_CANDLES, MAX_WAIT_FVG = 96, 960
 
 sent_signals = set()
 
-# LISTA COMPLETA DE MONEDAS (USDT-M)
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
@@ -71,7 +57,6 @@ def run_fvg_v3_strategy(symbol, timeframe):
         if not bars or len(bars) < 150: return
         df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"])
 
-        # 1. Indicadores Base
         df["sma"] = df["close"].rolling(window=BB_LEN).mean()
         df["std"] = df["close"].rolling(window=BB_LEN).std(ddof=0)
         df["upper_bb"] = df["sma"] + (BB_MULT * df["std"])
@@ -87,68 +72,47 @@ def run_fvg_v3_strategy(symbol, timeframe):
 
         df['prev_close'] = df['close'].shift(1)
         df['tr'] = df[['high', 'low', 'prev_close']].apply(
-            lambda row: max(row['high'] - row['low'], abs(row['high'] - row['prev_close']), abs(row['low'] - row['prev_close'])), axis=1
+            lambda r: max(r['high'] - r['low'], abs(r['high'] - r['prev_close']), abs(r['low'] - r['prev_close'])), axis=1
         )
         df['atr'] = df['tr'].rolling(window=ATR_LEN).mean()
 
-        # 2. Máquina de Estados sincronizada a la vela de cierre exacta
         state = "idle"
         direction = None
-        sigPrice = 0.0
-        sigHigh = 0.0
-        sigLow = 0.0
-        sigBar = 0
-        extremeFavor = 0.0
-        sweepBar = 0
-        entryPrice = 0.0
-
+        sigPrice, sigHigh, sigLow = 0.0, 0.0, 0.0
+        sigBar, extremeFavor, sweepBar, entryPrice = 0, 0.0, 0, 0.0
         last_closed_idx = len(df) - 2
 
         for i in range(30, len(df) - 1):
             close_i = df['close'].iloc[i]
-            lower_i = df['lower_bb'].iloc[i]
-            upper_i = df['upper_bb'].iloc[i]
-            rsi_i = df['rsi'].iloc[i]
+            low_i = df['low'].iloc[i]
+            high_i = df['high'].iloc[i]
 
             if state == "idle":
-                stretchLong = close_i < lower_i
-                stretchShort = close_i > upper_i
-                signalLong = stretchLong and rsi_i < RSI_OS
-                signalShort = stretchShort and rsi_i > RSI_OB
-
-                if signalLong or signalShort:
-                    direction = "long" if signalLong else "short"
-                    sigBar = i
-                    sigHigh = df['high'].iloc[i]
-                    sigLow = df['low'].iloc[i]
-                    sigPrice = close_i
-                    extremeFavor = sigHigh if direction == "long" else sigLow
+                if close_i < df['lower_bb'].iloc[i] and df['rsi'].iloc[i] < RSI_OS:
+                    direction, sigBar, sigHigh, sigLow, sigPrice = "long", i, high_i, low_i, close_i
+                    extremeFavor = sigHigh
+                    state = "sweep"
+                elif close_i > df['upper_bb'].iloc[i] and df['rsi'].iloc[i] > RSI_OB:
+                    direction, sigBar, sigHigh, sigLow, sigPrice = "short", i, high_i, low_i, close_i
+                    extremeFavor = sigLow
                     state = "sweep"
 
-            if state == "sweep":
+            elif state == "sweep":
                 if i - sigBar > MAX_SWEEP_CANDLES:
                     state = "idle"
                 else:
-                    sweepCond = (close_i < sigLow) if direction == "long" else (close_i > sigHigh)
-                    if sweepCond:
+                    # BARRIDO CON CUERPO (CLOSE) SOBRE LA LÍNEA BLANCA
+                    sweep_cuerpo = (close_i < sigLow) if direction == "long" else (close_i > sigHigh)
+                    if sweep_cuerpo:
                         sweepBar = i
                         state = "fvg"
 
-            if state == "fvg":
-                high_i = df['high'].iloc[i]
-                low_i = df['low'].iloc[i]
+            elif state == "fvg":
                 atr_i = df['atr'].iloc[i]
+                extremeFavor = max(extremeFavor, high_i) if direction == "long" else min(extremeFavor, low_i)
+                favorATR = abs(extremeFavor - sigPrice) / atr_i if atr_i > 0 else 0
 
-                if direction == "long":
-                    extremeFavor = max(extremeFavor, high_i)
-                    favorATR = (extremeFavor - sigPrice) / atr_i if atr_i > 0 else 0
-                else:
-                    extremeFavor = min(extremeFavor, low_i)
-                    favorATR = (sigPrice - extremeFavor) / atr_i if atr_i > 0 else 0
-
-                if favorATR > MAX_BAND_ATR:
-                    state = "idle"
-                elif i - sweepBar > MAX_SWEEP_CANDLES:
+                if favorATR > MAX_BAND_ATR or (i - sweepBar > MAX_SWEEP_CANDLES):
                     state = "idle"
                 else:
                     bullFVG = (direction == "long") and (low_i > df['high'].iloc[i-2])
@@ -166,7 +130,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
                             entryPrice = gMid
                             state = "wait_fill"
 
-                            # Envío exacto en la siguiente vela tras formarse el FVG en la última vela cerrada
+                            # La alerta SOLO se activa cuando el FVG se confirma exactamente en la última vela cerrada
                             if i == last_closed_idx:
                                 time_val = df['time'].iloc[i]
                                 seq_id = f"{symbol}_{direction}_{time_val}"
@@ -178,7 +142,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
                                         f"Dirección: *{direction.upper()}*\n"
                                         f"📊 Rango Vela: `{candle_range_pct:.2f}%`\n"
                                         f"📍 Entrada Límite (50% FVG): `{entryPrice:.6f}`\n"
-                                        f"✅ Alerta precisa en la siguiente vela"
+                                        f"✅ FVG confirmado tras barrido con cuerpo"
                                     )
                                     send_telegram(msg)
                                     sent_signals.add(seq_id)
@@ -186,14 +150,13 @@ def run_fvg_v3_strategy(symbol, timeframe):
             elif state == "wait_fill":
                 if i - sweepBar > MAX_WAIT_FVG:
                     state = "idle"
-                else:
-                    if (df['low'].iloc[i] <= entryPrice) if direction == "long" else (df['high'].iloc[i] >= entryPrice):
-                        state = "filled"
+                elif (low_i <= entryPrice) if direction == "long" else (high_i >= entryPrice):
+                    state = "filled"
 
             elif state == "filled":
-                if (df['high'].iloc[i] >= entryPrice * 1.04) if direction == "long" else (df['low'].iloc[i] <= entryPrice * 0.96):
+                if (high_i >= entryPrice * 1.04) if direction == "long" else (low_i <= entryPrice * 0.96):
                     state = "idle"
-                elif (df['low'].iloc[i] <= entryPrice * 0.97) if direction == "long" else (df['high'].iloc[i] >= entryPrice * 1.03):
+                elif (low_i <= entryPrice * 0.97) if direction == "long" else (high_i >= entryPrice * 1.03):
                     state = "idle"
 
         if len(sent_signals) > 2000: sent_signals.clear()
@@ -201,7 +164,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         pass
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Sincronizado*\n✅ Sintonizado a la perfección: Alerta exactamente en la siguiente vela del FVG.")
+    send_telegram("🚀 *Bot FVG V3 Actualizado*\n✅ Barrido condicionado al cierre del cuerpo (`close`).")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
