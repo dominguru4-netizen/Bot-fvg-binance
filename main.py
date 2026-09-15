@@ -28,7 +28,6 @@ MAX_SWEEP_CANDLES = 480 # 24 horas en velas de 3m
 
 sent_signals = set()
 
-# LISTA COMPLETA DE MONEDAS (USDT-M)
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
@@ -92,6 +91,8 @@ def run_fvg_v3_strategy(symbol, timeframe):
 
         # Recorremos buscando señales BOT-S confirmadas
         for i in range(30, len(df) - 3):
+            # 1. Señal BOT-S en vela i-1, confirmada en vela i
+            # (Precio fuera de banda + RSI extremo + mecha + confirmada en vela siguiente)
             prev_open, prev_high, prev_low, prev_close = df['open'].iloc[i-1], df['high'].iloc[i-1], df['low'].iloc[i-1], df['close'].iloc[i-1]
             prev_rsi = df['rsi'].iloc[i-1]
             prev_lower = df['lower_bb'].iloc[i-1]
@@ -100,9 +101,9 @@ def run_fvg_v3_strategy(symbol, timeframe):
             c_open, c_high, c_low, c_close = df['open'].iloc[i], df['high'].iloc[i], df['low'].iloc[i], df['close'].iloc[i]
 
             # LONG Signal Base BOT-S
-            is_bot_s_long = (prev_low < prev_lower) and (prev_rsi <= RSI_OVERSOLD) and (c_close > c_open)
+            is_bot_s_long = (prev_low < prev_lower) and (prev_rsi <= RSI_OVERSOLD) and (c_close > c_open) # Confirmada alcista
             # SHORT Signal Base BOT-S
-            is_bot_s_short = (prev_high > prev_upper) and (prev_rsi >= RSI_OVERBOUGHT) and (c_close < c_open)
+            is_bot_s_short = (prev_high > prev_upper) and (prev_rsi >= RSI_OVERBOUGHT) and (c_close < c_open) # Confirmada bajista
 
             if not is_bot_s_long and not is_bot_s_short:
                 continue
@@ -111,21 +112,22 @@ def run_fvg_v3_strategy(symbol, timeframe):
             sig_price = c_close
             extreme_val = prev_low if direction == "LONG" else prev_high
 
-            # Barrido de liquidez
+            # 2. Barrido de liquidez + 3. Fvg Válido + 4. Banda de validez <= 3 ATR
             swept = False
             sweep_idx = -1
             
             for j in range(i + 1, min(i + 1 + MAX_SWEEP_CANDLES, len(df))):
                 j_close = df['close'].iloc[j]
-                curr_atr = df['atr'].iloc[j]
                 
-                # Cancelación si el precio rebasa 3 ATR a favor antes de formar el FVG
+                # Comprobar cancelación si el precio se va demasiado en contra o a favor antes de barrer
+                # Según texto: "si el precio rebasa 3 ATR a favor antes de formar el FVG, el trade se cancela"
+                curr_atr = df['atr'].iloc[j]
                 if direction == "LONG" and (df['high'].iloc[j] - sig_price) > (3 * curr_atr):
-                    break
+                    break # Cancelado por irse muy a favor antes de tiempo
                 if direction == "SHORT" and (sig_price - df['low'].iloc[j]) > (3 * curr_atr):
                     break
 
-                # Al menos 1 vela CIERRA más allá del extremo de la señal
+                # Verificar si al menos 1 vela CIERRA más allá del extremo de la señal
                 if direction == "LONG" and j_close < extreme_val:
                     swept = True
                     sweep_idx = j
@@ -138,21 +140,24 @@ def run_fvg_v3_strategy(symbol, timeframe):
             if not swept:
                 continue
 
-            # Buscar primer FVG a favor con gap_atr >= 0.40
+            # 3. Tras el barrido, buscar el primer FVG a favor con gap_atr >= 0.40
             fvg_found = False
             fvg_mid = 0.0
 
             for k in range(sweep_idx, min(sweep_idx + 10, len(df) - 1)):
                 k_atr = df['atr'].iloc[k]
                 if direction == "LONG":
+                    # FVG Alcista: low[k] > high[k-2] y vela intermedia verde
                     if (df['low'].iloc[k] > df['high'].iloc[k-2]) and (df['close'].iloc[k-1] > df['open'].iloc[k-1]):
                         gap_size = df['low'].iloc[k] - df['high'].iloc[k-2]
                         if (gap_size / k_atr) >= GAP_ATR_MIN:
                             fvg_mid = (df['high'].iloc[k-2] + df['low'].iloc[k]) / 2.0
+                            # 4. Banda de validez: punto medio a menos de 3 ATR del precio
                             if abs(fvg_mid - sig_price) <= (3 * k_atr):
                                 fvg_found = True
                                 break
                 else:
+                    # FVG Bajista: high[k] < low[k-2] y vela intermedia roja
                     if (df['high'].iloc[k] < df['low'].iloc[k-2]) and (df['close'].iloc[k-1] < df['open'].iloc[k-1]):
                         gap_size = df['low'].iloc[k-2] - df['high'].iloc[k]
                         if (gap_size / k_atr) >= GAP_ATR_MIN:
@@ -162,31 +167,31 @@ def run_fvg_v3_strategy(symbol, timeframe):
                                 break
 
             if fvg_found:
-                # Quitamos la restricción restrictiva de las últimas 2 velas para que cante 
-                # la señal exactamente en la vela 'k' donde se forma el FVG (Línea Amarilla)
-                seq_id = f"{symbol}_{direction}_{df['time'].iloc[k]}"
-                if seq_id not in sent_signals:
-                    tp_val = fvg_mid * (1 + TP_PERCENT) if direction == "LONG" else fvg_mid * (1 - TP_PERCENT)
-                    sl_val = fvg_mid * (1 - SL_PERCENT) if direction == "LONG" else fvg_mid * (1 + SL_PERCENT)
-                    
-                    msg = (
-                        f"📌 *Estrategia FVG V3 (3m)*\n"
-                        f"Par: `{symbol.replace('/', '')}.P`\n"
-                        f"Dirección: *{direction}*\n"
-                        f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
-                        f"🎯 TP (+4%): `{tp_val:.6f}`\n"
-                        f"🛑 SL (-3%): `{sl_val:.6f}`\n"
-                        f"✅ Sincronizado en la vela exacta del FVG"
-                    )
-                    send_telegram(msg)
-                    sent_signals.add(seq_id)
+                # Comprobar que la señal ocurra en las velas recientes (últimas 2 velas analizadas)
+                if k >= len(df) - 2:
+                    seq_id = f"{symbol}_{direction}_{df['time'].iloc[k]}"
+                    if seq_id not in sent_signals:
+                        tp_val = fvg_mid * (1 + TP_PERCENT) if direction == "LONG" else fvg_mid * (1 - TP_PERCENT)
+                        sl_val = fvg_mid * (1 - SL_PERCENT) if direction == "LONG" else fvg_mid * (1 + SL_PERCENT)
+                        
+                        msg = (
+                            f"📌 *Estrategia FVG V3 (3m)*\n"
+                            f"Par: `{symbol.replace('/', '')}.P`\n"
+                            f"Dirección: *{direction}*\n"
+                            f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
+                            f"🎯 TP (+4%): `{tp_val:.6f}`\n"
+                            f"🛑 SL (-3%): `{sl_val:.6f}`\n"
+                            f"✅ Regla cumplida: Señal BOT-S ➔ Barrido Cierre ➔ FVG Valido (gap $\\ge$ 0.4 ATR)"
+                        )
+                        send_telegram(msg)
+                        sent_signals.add(seq_id)
 
         if len(sent_signals) > 2000: sent_signals.clear()
-    except Exception:
+    except Exception as e:
         pass
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Actualizado*\n✅ Sincronización exacta en la vela del FVG (Línea Amarilla).")
+    send_telegram("🚀 *Bot FVG V3 Reiniciado (Versión Oficial)*\n✅ Aplicando estrictamente las reglas base del documento oficial.")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
@@ -196,7 +201,7 @@ async def bucle_bot():
             run_fvg_v3_strategy(symbol, "3m")
             await asyncio.sleep(0.04)
 
-async def handle_ping(request): return web.Response(text="Bot FVG V3 Activo")
+async def handle_ping(request): return web.Response(text="Bot FVG V3 Activo Oficial")
 
 async def main():
     app = web.Application()
