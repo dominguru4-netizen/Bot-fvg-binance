@@ -31,6 +31,8 @@ MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 TP_PCT = 4.0
 SL_PCT = 3.0
 
+BODY_MIN_RATIO = 0.30   # la vela de barrido debe tener cuerpo >= 30% de su rango total
+
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
 FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
@@ -128,13 +130,17 @@ def process_bar(symbol, i, df, st, alert_enabled):
     """Procesa UNA vela replicando exactamente los bloques del script Pine,
     en el mismo orden (no son excluyentes entre sí, igual que en Pine)."""
     row = df.iloc[i]
-    close, high, low = row["close"], row["high"], row["low"]
+    open_, close, high, low = row["open"], row["close"], row["high"], row["low"]
     rsi, upper_bb, lower_bb, atr = row["rsi"], row["upper_bb"], row["lower_bb"], row["atr"]
     bar_time = row["time"]
 
     if pd.isna(rsi) or pd.isna(upper_bb) or pd.isna(lower_bb) or pd.isna(atr):
         st["last_time"] = bar_time
         return
+
+    body_size = abs(close - open_)
+    candle_range = high - low
+    body_ratio = (body_size / candle_range) if candle_range > 0 else 0.0
 
     signal_long = close < lower_bb and rsi < RSI_OS
     signal_short = close > upper_bb and rsi > RSI_OB
@@ -155,7 +161,18 @@ def process_bar(symbol, i, df, st, alert_enabled):
         if elapsed > MAX_SWEEP_BARS:
             st["state"] = "idle"
         else:
-            sweep_cond = close < st["sig_low"] if st["dir"] == "long" else close > st["sig_high"]
+            if st["dir"] == "long":
+                sweep_cond = (
+                    close < st["sig_low"]        # cierra por debajo del extremo de la señal
+                    and close < open_             # vela bajista (cuerpo a favor del barrido)
+                    and body_ratio >= BODY_MIN_RATIO   # con cuerpo real, no doji
+                )
+            else:
+                sweep_cond = (
+                    close > st["sig_high"]
+                    and close > open_             # vela alcista
+                    and body_ratio >= BODY_MIN_RATIO
+                )
             if sweep_cond:
                 st["sweep_time"] = bar_time
                 st["state"] = "fvg"
@@ -221,13 +238,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
             filled = low <= st["entry_price"] if st["dir"] == "long" else high >= st["entry_price"]
             if filled:
                 st["state"] = "filled"
-                if alert_enabled:
-                    send_telegram(
-                        f"✅ *Entrada ejecutada*\n"
-                        f"Par: `{symbol}`\n"
-                        f"Dirección: *{st['dir'].upper()}*\n"
-                        f"Precio: `{st['entry_price']:.6f}`"
-                    )
+                # (sin alerta aquí para no saturar Telegram; el estado se sigue registrando)
 
     # --- 5) En operación: salida al primer toque de TP o SL ---
     if st["state"] == "filled":
@@ -235,11 +246,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
         hit_sl = low <= st["sl_price"] if st["dir"] == "long" else high >= st["sl_price"]
         if hit_tp or hit_sl:
             won = hit_tp and not hit_sl
-            if alert_enabled:
-                send_telegram(
-                    f"{'🟢 TP alcanzado' if won else '🔴 SL alcanzado'} — cerrar "
-                    f"*{st['dir'].upper()}* en `{symbol}`"
-                )
+            # (sin alerta aquí para no saturar Telegram; el estado se sigue registrando)
             st["state"] = "idle"
 
     st["last_time"] = bar_time
