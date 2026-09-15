@@ -13,22 +13,28 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS GLOBALES (ESTRATEGIA FVG V3)
+# PARÁMETROS EXACTOS DEL INDICADOR FVG V3
 # ==========================================
-LIMIT_SWEEP = 96
-RECENT_WINDOW = 20
-SL_PERCENT = 0.050
-TP1_PERCENT = 0.007  # 0.7%
-TP2_PERCENT = 0.015  # 1.5%
-MAX_VALIDEZ_ATR = 10.0
+BB_LEN = 20
+BB_MULT = 2.0
+RSI_LEN = 14
+RSI_OB = 70.0
+RSI_OS = 30.0
 
-# Registro para evitar duplicados en la misma vela
+ATR_LEN = 14
+MIN_GAP_ATR = 0.40
+MAX_BAND_ATR = 3.0
+MAX_SWEEP_CANDLES = 480
+MAX_WAIT_FVG = 960
+
+TP_PCT = 4.0
+SL_PCT = 3.0
+
 sent_signals = set()
 
-# Fusión de ambas listas (elimina repetidos automáticamente)
+# LISTA COMPLETA DE MONEDAS (USDT-M)
 SYMBOLS = list(set([
-    # --- Lista Original ---
-    "H/USDT", "SKYAI/USDT", "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
     "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT", 
     "FIL/USDT", "XMR/USDT", "TIA/USDT", "ATOM/USDT", "STX/USDT", "INJ/USDT", "WIF/USDT", "OP/USDT",
@@ -50,192 +56,175 @@ SYMBOLS = list(set([
     "UNFI/USDT", "LIT/USDT", "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT", 
     "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT", "BSW/USDT", "CVX/USDT", 
     "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT", "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT", 
-    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT",
-    
-    # --- Lista Nueva ---
-    "0G/USDT", "1000BONK/USDT", "1000PEPE/USDT", "AAVE/USDT", "ACU/USDT", "ADA/USDT",
-    "AERO/USDT", "AIA/USDT", "AKE/USDT", "ALGO/USDT", "APE/USDT", "APT/USDT", "ARB/USDT",
-    "ASR/USDT", "ASTER/USDT", "ATH/USDT", "ATOM/USDT", "AVAX/USDT", "AVNT/USDT", "BANK/USDT",
-    "BB/USDT", "BEAT/USDT", "BIO/USDT", "BNB/USDT", "BOME/USDT", "BROCCOLIF3B/USDT", "BSV/USDT",
-    "BTC/USDT", "B/USDT", "C98/USDT", "CAKE/USDT", "CC/USDT", "CELR/USDT", "CHIP/USDT", "CHR/USDT",
-    "CHZ/USDT", "COAI/USDT", "CRV/USDT", "DASH/USDT", "DEXE/USDT", "DIA/USDT", "DOT/USDT",
-    "DYDX/USDT", "EIGEN/USDT", "ELSA/USDT", "ENS/USDT", "ETC/USDT", "ETHFI/USDT", "ETH/USDT",
-    "FARTCOIN/USDT", "FF/USDT", "FIGHT/USDT", "FIL/USDT", "FLUX/USDT", "FOGO/USDT", "GENIUS/USDT",
-    "GIGGLE/USDT", "GMX/USDT", "GRASS/USDT", "GRIFFAIN/USDT", "GRT/USDT", "GUN/USDT", "GWEI/USDT",
-    "HBAR/USDT", "H/USDT", "HYPE/USDT", "ICNT/USDT", "ICP/USDT", "ID/USDT", "INX/USDT", "IOTA/USDT",
-    "JASMY/USDT", "JOE/USDT", "JTO/USDT", "JUP/USDT", "KAS/USDT", "KAT/USDT", "KITE/USDT",
-    "LAYER/USDT", "LDO/USDT", "LINK/USDT", "LIT/USDT", "LTC/USDT", "MANA/USDT", "MANTRA/USDT",
-    "METIS/USDT", "MET/USDT", "MON/USDT", "MORPHO/USDT", "MOVR/USDT", "MUBARAK/USDT", "NEAR/USDT",
-    "NIGHT/USDT", "OG/USDT", "ONDO/USDT", "ONE/USDT", "ONT/USDT", "OP/USDT", "PENGU/USDT",
-    "PLUME/USDT", "POL/USDT", "PUMP/USDT", "QNT/USDT", "Q/USDT", "RAYSOL/USDT", "RENDER/USDT",
-    "RIVER/USDT", "RLC/USDT", "SAFE/USDT", "SAND/USDT", "SCRT/USDT", "SEI/USDT", "SHELL/USDT",
-    "SKL/USDT", "SKR/USDT", "SKYAI/USDT", "SKY/USDT", "SOON/USDT", "SPORTFUN/USDT", "SPX/USDT",
-    "SSV/USDT", "STRK/USDT", "STX/USDT", "SUI/USDT", "SYRUP/USDT", "TAO/USDT", "THETA/USDT",
-    "THE/USDT", "TIA/USDT", "TRB/USDT", "TRIA/USDT", "TRUMP/USDT", "TRX/USDT", "UB/USDT", "UNI/USDT",
-    "VET/USDT", "VIRTUAL/USDT", "WAXP/USDT", "WIF/USDT", "WLD/USDT", "WLFI/USDT", "XLM/USDT",
-    "XMR/USDT", "XPL/USDT", "XRP/USDT", "XVG/USDT", "ZAMA/USDT", "ZEN/USDT"
+    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT", "HBAR/USDT"
 ]))
 
-exchange = ccxt.binance(
-    {"enableRateLimit": True, "options": {"defaultType": "swap"}}
-)
+exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "swap"}})
 
 def send_telegram(message):
-  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-  payload = {
-      "chat_id": TELEGRAM_CHAT_ID,
-      "text": message,
-      "parse_mode": "Markdown",
-  }
-  try:
-    requests.post(url, json=payload, timeout=10)
-  except Exception as e:
-    print(f"Error Telegram: {e}", flush=True)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
+    except Exception as e:
+        print(f"Error Telegram: {e}", flush=True)
 
-def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
-  try:
-    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=150)
-    if not bars or len(bars) < 120:
-      return
+def run_fvg_v3_strategy(symbol, timeframe):
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=600)
+        if not bars or len(bars) < 150: return
+        df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"])
 
-    df = pd.DataFrame(
-        bars, columns=["time", "open", "high", "low", "close", "volume"]
-    )
-    df = df.iloc[:-1].copy()
+        # 1. Indicadores Base (idénticos a Pine Script)
+        df["sma"] = df["close"].rolling(window=BB_LEN).mean()
+        df["std"] = df["close"].rolling(window=BB_LEN).std(ddof=0)
+        df["upper_bb"] = df["sma"] + (BB_MULT * df["std"])
+        df["lower_bb"] = df["sma"] - (BB_MULT * df["std"])
 
-    last_candle_time = df["time"].iloc[-1]
-    signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
-    if signal_key in sent_signals:
-      return
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        alpha = 1 / RSI_LEN
+        df['avg_gain'] = gain.ewm(alpha=alpha, min_periods=RSI_LEN, adjust=False).mean()
+        df['avg_loss'] = loss.ewm(alpha=alpha, min_periods=RSI_LEN, adjust=False).mean()
+        df['rsi'] = 100 - (100 / (1 + (df['avg_gain'] / df['avg_loss'])))
 
-    # --- ATR ---
-    high_low = df["high"] - df["low"]
-    high_close = (df["high"] - df["close"].shift()).abs()
-    low_close = (df["low"] - df["close"].shift()).abs()
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["atr"] = true_range.rolling(window=14).mean()
-    atr_val = df["atr"].iloc[-1]
+        df['prev_close'] = df['close'].shift(1)
+        df['tr'] = df[['high', 'low', 'prev_close']].apply(
+            lambda row: max(row['high'] - row['low'], abs(row['high'] - row['prev_close']), abs(row['low'] - row['prev_close'])), axis=1
+        )
+        df['atr'] = df['tr'].rolling(window=ATR_LEN).mean()
 
-    # --- FILTRO SWEEP ---
-    min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
-    max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
-    
-    swept_low = df["low"].iloc[-RECENT_WINDOW:].min() < min_previo
-    swept_high = df["high"].iloc[-RECENT_WINDOW:].max() > max_previo
+        # 2. Máquina de Estados (Simulación barra por barra)
+        state = "idle"
+        direction = None
+        sigPrice = 0.0
+        sigHigh = 0.0
+        sigLow = 0.0
+        sigBar = 0
+        extremeFavor = 0.0
+        sweepBar = 0
+        entryPrice = 0.0
+        tpPrice = 0.0
+        slPrice = 0.0
 
-    # --- RECUADRO FVG (Velas v1, v2, v3) ---
-    v1_high = df["high"].iloc[-3]
-    v1_low = df["low"].iloc[-3]
-    v3_low = df["low"].iloc[-1]
-    v3_high = df["high"].iloc[-1]
+        for i in range(30, len(df) - 1):
+            close_i = df['close'].iloc[i]
+            lower_i = df['lower_bb'].iloc[i]
+            upper_i = df['upper_bb'].iloc[i]
+            rsi_i = df['rsi'].iloc[i]
 
-    fvg_bullish = v3_low > v1_high
-    fvg_bearish = v3_high < v1_low
-    fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
-    fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
+            if state == "idle":
+                stretchLong = close_i < lower_i
+                stretchShort = close_i > upper_i
+                signalLong = stretchLong and rsi_i < RSI_OS
+                signalShort = stretchShort and rsi_i > RSI_OB
 
-    # --- TAMAÑO DE VELA IMPULSIVA (%) ---
-    size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
-    size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
-    size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
-    max_setup_size = max(size_v1, size_v2, size_v3)
+                if signalLong or signalShort:
+                    direction = "long" if signalLong else "short"
+                    sigBar = i
+                    sigHigh = df['high'].iloc[i]
+                    sigLow = df['low'].iloc[i]
+                    sigPrice = close_i
+                    extremeFavor = sigHigh if direction == "long" else sigLow
+                    state = "sweep"
 
-    velas_tienen_rango = max_setup_size >= min_candle_size_pct
-    clean_symbol = symbol.replace("/", "") + ".P"
+            elif state == "sweep":
+                if i - sigBar > MAX_SWEEP_CANDLES:
+                    state = "idle"
+                else:
+                    sweepCond = (close_i < sigLow) if direction == "long" else (close_i > sigHigh)
+                    if sweepCond:
+                        sweepBar = i
+                        state = "fvg"
 
-    # --- SEÑAL LONG ---
-    if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
-      fvg_bottom = v1_high
-      fvg_top = v3_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
-      fvg_final = fvg_bottom                 
-      
-      sl = v1_low * (1 - SL_PERCENT)
-      tp1 = fvg_final * (1 + TP1_PERCENT)
-      tp2 = fvg_final * (1 + TP2_PERCENT)
+            elif state == "fvg":
+                high_i = df['high'].iloc[i]
+                low_i = df['low'].iloc[i]
+                atr_i = df['atr'].iloc[i]
 
-      msg = (
-          f"🟢 *LONG · FVG ({timeframe})*\n"
-          f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%`\n"
-          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
-          f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
-          f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
-          f"🛑 SL: `{sl:.4f}`"
-      )
-      send_telegram(msg)
-      sent_signals.add(signal_key)
+                if direction == "long":
+                    extremeFavor = max(extremeFavor, high_i)
+                    favorATR = (extremeFavor - sigPrice) / atr_i if atr_i > 0 else 0
+                else:
+                    extremeFavor = min(extremeFavor, low_i)
+                    favorATR = (sigPrice - extremeFavor) / atr_i if atr_i > 0 else 0
 
-    # --- SEÑAL SHORT ---
-    if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
-      fvg_bottom = v3_high
-      fvg_top = v1_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
-      fvg_final = fvg_top                    
-      
-      sl = v1_high * (1 + SL_PERCENT)
-      tp1 = fvg_final * (1 - TP1_PERCENT)
-      tp2 = fvg_final * (1 - TP2_PERCENT)
+                if favorATR > MAX_BAND_ATR:
+                    state = "idle"
+                elif i - sweepBar > MAX_SWEEP_CANDLES:
+                    state = "idle"
+                else:
+                    bullFVG = (direction == "long") and (low_i > df['high'].iloc[i-2])
+                    bearFVG = (direction == "short") and (high_i < df['low'].iloc[i-2])
 
-      msg = (
-          f"🔴 *SHORT · FVG ({timeframe})*\n"
-          f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%`\n"
-          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
-          f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
-          f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
-          f"🛑 SL: `{sl:.4f}`"
-      )
-      send_telegram(msg)
-      sent_signals.add(signal_key)
+                    if bullFVG or bearFVG:
+                        gTop = low_i if direction == "long" else df['low'].iloc[i-2]
+                        gBot = df['high'].iloc[i-2] if direction == "long" else high_i
+                        gSize = gTop - gBot
+                        gAtr = gSize / atr_i if atr_i > 0 else 0
+                        gMid = (gTop + gBot) / 2.0
+                        midDistATR = abs(gMid - sigPrice) / atr_i if atr_i > 0 else 0
 
-    if len(sent_signals) > 1000:
-      sent_signals.clear()
+                        if gAtr >= MIN_GAP_ATR and midDistATR <= MAX_BAND_ATR:
+                            entryPrice = gMid
+                            tpPrice = entryPrice * (1 + TP_PCT / 100) if direction == "long" else entryPrice * (1 - TP_PCT / 100)
+                            slPrice = entryPrice * (1 - SL_PCT / 100) if direction == "long" else entryPrice * (1 + SL_PCT / 100)
+                            state = "wait_fill"
 
-  except Exception as e:
-    print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
+                            # Si esto ocurre exactamente en la última vela cerrada, enviamos la alerta
+                            if i == len(df) - 2:
+                                time_val = df['time'].iloc[i]
+                                seq_id = f"{symbol}_{direction}_{time_val}"
+                                if seq_id not in sent_signals:
+                                    msg = (
+                                        f"📌 *Estrategia FVG V3 (3m)*\n"
+                                        f"Par: `{symbol.replace('/', '')}.P`\n"
+                                        f"Dirección: *{direction.upper()}*\n"
+                                        f"📍 Entrada Límite (50% FVG): `{entryPrice:.6f}`\n"
+                                        f"🎯 TP (+{TP_PCT}%): `{tpPrice:.6f}`\n"
+                                        f"🛑 SL (-{SL_PCT}%): `{slPrice:.6f}`\n"
+                                        f"✅ Sincronizado exactamente en la vela del FVG"
+                                    )
+                                    send_telegram(msg)
+                                    sent_signals.add(seq_id)
+
+            elif state == "wait_fill":
+                if i - sweepBar > MAX_WAIT_FVG:
+                    state = "idle"
+                else:
+                    if (df['low'].iloc[i] <= entryPrice) if direction == "long" else (df['high'].iloc[i] >= entryPrice):
+                        state = "filled"
+
+            elif state == "filled":
+                if (df['high'].iloc[i] >= tpPrice) if direction == "long" else (df['low'].iloc[i] <= tpPrice):
+                    state = "idle"
+                elif (df['low'].iloc[i] <= slPrice) if direction == "long" else (df['high'].iloc[i] >= slPrice):
+                    state = "idle"
+
+        if len(sent_signals) > 2000: sent_signals.clear()
+    except Exception:
+        pass
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Activo (Listas Fusionadas)*\nEscaneando 5m y 15m.")
+    send_telegram("🚀 *Bot FVG V3 Sincronizado* \n✅ Lógica exacta del indicador Pine Script aplicada a todas las monedas.")
+    while True:
+        now = datetime.now(timezone.utc)
+        sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
+        if sleep_time < 5: sleep_time += 180
+        await asyncio.sleep(sleep_time)
+        for symbol in SYMBOLS:
+            run_fvg_v3_strategy(symbol, "3m")
+            await asyncio.sleep(0.04)
 
-  while True:
-    now = datetime.now(timezone.utc)
-    seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
-    sleep_time = seconds_to_next_5m + 2
-
-    if sleep_time < 5:
-      sleep_time += 300
-
-    await asyncio.sleep(sleep_time)
-
-    now_awoke = datetime.now(timezone.utc)
-    es_cuarto_de_hora = now_awoke.minute % 15 == 0
-
-    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...", flush=True)
-    for symbol in SYMBOLS:
-      run_reversion_strategy(symbol, "5m", 2.0)
-      await asyncio.sleep(0.04)
-
-    if es_cuarto_de_hora:
-      print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...", flush=True)
-      for symbol in SYMBOLS:
-        run_reversion_strategy(symbol, "15m", 3.0)
-        await asyncio.sleep(0.04)
-
-async def handle_ping(request):
-  return web.Response(text="Bot FVG V3 Activo")
+async def handle_ping(request): return web.Response(text="Bot FVG V3 Activo")
 
 async def main():
-  app = web.Application()
-  app.router.add_get("/", handle_ping)
-  port = int(os.environ.get("PORT", 10000))
-  runner = web.AppRunner(app)
-  await runner.setup()
-  site = web.TCPSite(runner, "0.0.0.0", port)
-  await site.start()
-  asyncio.create_task(bucle_bot())
-  while True:
-    await asyncio.sleep(3600)
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+    asyncio.create_task(bucle_bot())
+    while True: await asyncio.sleep(3600)
 
-if __name__ == "__main__":
-  asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
