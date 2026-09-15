@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS EXACTOS DEL INDICADOR FVG V3
+# PARÁMETROS ACTUALIZADOS (SEGÚN CONFIGURACIÓN)
 # ==========================================
 BB_LEN = 20
 BB_MULT = 2.0
@@ -24,11 +24,8 @@ RSI_OS = 30.0
 ATR_LEN = 14
 MIN_GAP_ATR = 0.40
 MAX_BAND_ATR = 3.0
-MAX_SWEEP_CANDLES = 480
+MAX_SWEEP_CANDLES = 96  # Actualizado a 96 según tus parámetros
 MAX_WAIT_FVG = 960
-
-TP_PCT = 4.0
-SL_PCT = 3.0
 
 sent_signals = set()
 
@@ -74,7 +71,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         if not bars or len(bars) < 150: return
         df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"])
 
-        # 1. Indicadores Base (idénticos a Pine Script)
+        # 1. Indicadores Base
         df["sma"] = df["close"].rolling(window=BB_LEN).mean()
         df["std"] = df["close"].rolling(window=BB_LEN).std(ddof=0)
         df["upper_bb"] = df["sma"] + (BB_MULT * df["std"])
@@ -94,7 +91,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         )
         df['atr'] = df['tr'].rolling(window=ATR_LEN).mean()
 
-        # 2. Máquina de Estados (Simulación barra por barra)
+        # 2. Máquina de Estados
         state = "idle"
         direction = None
         sigPrice = 0.0
@@ -104,8 +101,6 @@ def run_fvg_v3_strategy(symbol, timeframe):
         extremeFavor = 0.0
         sweepBar = 0
         entryPrice = 0.0
-        tpPrice = 0.0
-        slPrice = 0.0
 
         for i in range(30, len(df) - 1):
             close_i = df['close'].iloc[i]
@@ -167,23 +162,20 @@ def run_fvg_v3_strategy(symbol, timeframe):
 
                         if gAtr >= MIN_GAP_ATR and midDistATR <= MAX_BAND_ATR:
                             entryPrice = gMid
-                            tpPrice = entryPrice * (1 + TP_PCT / 100) if direction == "long" else entryPrice * (1 - TP_PCT / 100)
-                            slPrice = entryPrice * (1 - SL_PCT / 100) if direction == "long" else entryPrice * (1 + SL_PCT / 100)
                             state = "wait_fill"
 
-                            # Si esto ocurre exactamente en la última vela cerrada, enviamos la alerta
                             if i == len(df) - 2:
                                 time_val = df['time'].iloc[i]
                                 seq_id = f"{symbol}_{direction}_{time_val}"
                                 if seq_id not in sent_signals:
+                                    # Alerta limpia sin TP/SL e incluyendo volatilidad (ATR y tamaño del gap)
                                     msg = (
                                         f"📌 *Estrategia FVG V3 (3m)*\n"
                                         f"Par: `{symbol.replace('/', '')}.P`\n"
                                         f"Dirección: *{direction.upper()}*\n"
                                         f"📍 Entrada Límite (50% FVG): `{entryPrice:.6f}`\n"
-                                        f"🎯 TP (+{TP_PCT}%): `{tpPrice:.6f}`\n"
-                                        f"🛑 SL (-{SL_PCT}%): `{slPrice:.6f}`\n"
-                                        f"✅ Sincronizado exactamente en la vela del FVG"
+                                        f"📊 Volatilidad ATR: `{atr_i:.5f}` | Gap: `{gAtr:.2f}x ATR`\n"
+                                        f"✅ Sincronizado en la vela exacta del FVG"
                                     )
                                     send_telegram(msg)
                                     sent_signals.add(seq_id)
@@ -196,9 +188,9 @@ def run_fvg_v3_strategy(symbol, timeframe):
                         state = "filled"
 
             elif state == "filled":
-                if (df['high'].iloc[i] >= tpPrice) if direction == "long" else (df['low'].iloc[i] <= tpPrice):
+                if (df['high'].iloc[i] >= entryPrice * 1.04) if direction == "long" else (df['low'].iloc[i] <= entryPrice * 0.96):
                     state = "idle"
-                elif (df['low'].iloc[i] <= slPrice) if direction == "long" else (df['high'].iloc[i] >= slPrice):
+                elif (df['low'].iloc[i] <= entryPrice * 0.97) if direction == "long" else (df['high'].iloc[i] >= entryPrice * 1.03):
                     state = "idle"
 
         if len(sent_signals) > 2000: sent_signals.clear()
@@ -206,7 +198,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         pass
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Sincronizado* \n✅ Lógica exacta del indicador Pine Script aplicada a todas las monedas.")
+    send_telegram("🚀 *Bot FVG V3 Actualizado*\n✅ Parámetros de barrido (96 velas), alertas limpias y métrica de volatilidad añadidas.")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
