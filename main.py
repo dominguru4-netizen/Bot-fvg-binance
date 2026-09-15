@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS ACTUALIZADOS (SEGÚN CONFIGURACIÓN)
+# PARÁMETROS CONFIGURADOS
 # ==========================================
 BB_LEN = 20
 BB_MULT = 2.0
@@ -24,7 +24,7 @@ RSI_OS = 30.0
 ATR_LEN = 14
 MIN_GAP_ATR = 0.40
 MAX_BAND_ATR = 3.0
-MAX_SWEEP_CANDLES = 96  # Actualizado a 96 según tus parámetros
+MAX_SWEEP_CANDLES = 96
 MAX_WAIT_FVG = 960
 
 sent_signals = set()
@@ -91,7 +91,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         )
         df['atr'] = df['tr'].rolling(window=ATR_LEN).mean()
 
-        # 2. Máquina de Estados
+        # 2. Máquina de Estados sincronizada a la vela de cierre exacta
         state = "idle"
         direction = None
         sigPrice = 0.0
@@ -101,6 +101,8 @@ def run_fvg_v3_strategy(symbol, timeframe):
         extremeFavor = 0.0
         sweepBar = 0
         entryPrice = 0.0
+
+        last_closed_idx = len(df) - 2
 
         for i in range(30, len(df) - 1):
             close_i = df['close'].iloc[i]
@@ -123,7 +125,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
                     extremeFavor = sigHigh if direction == "long" else sigLow
                     state = "sweep"
 
-            elif state == "sweep":
+            if state == "sweep":
                 if i - sigBar > MAX_SWEEP_CANDLES:
                     state = "idle"
                 else:
@@ -132,7 +134,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
                         sweepBar = i
                         state = "fvg"
 
-            elif state == "fvg":
+            if state == "fvg":
                 high_i = df['high'].iloc[i]
                 low_i = df['low'].iloc[i]
                 atr_i = df['atr'].iloc[i]
@@ -164,18 +166,19 @@ def run_fvg_v3_strategy(symbol, timeframe):
                             entryPrice = gMid
                             state = "wait_fill"
 
-                            if i == len(df) - 2:
+                            # Envío exacto en la siguiente vela tras formarse el FVG en la última vela cerrada
+                            if i == last_closed_idx:
                                 time_val = df['time'].iloc[i]
                                 seq_id = f"{symbol}_{direction}_{time_val}"
                                 if seq_id not in sent_signals:
-                                    # Alerta limpia sin TP/SL e incluyendo volatilidad (ATR y tamaño del gap)
+                                    candle_range_pct = ((high_i - low_i) / low_i) * 100
                                     msg = (
                                         f"📌 *Estrategia FVG V3 (3m)*\n"
                                         f"Par: `{symbol.replace('/', '')}.P`\n"
                                         f"Dirección: *{direction.upper()}*\n"
+                                        f"📊 Rango Vela: `{candle_range_pct:.2f}%`\n"
                                         f"📍 Entrada Límite (50% FVG): `{entryPrice:.6f}`\n"
-                                        f"📊 Volatilidad ATR: `{atr_i:.5f}` | Gap: `{gAtr:.2f}x ATR`\n"
-                                        f"✅ Sincronizado en la vela exacta del FVG"
+                                        f"✅ Alerta precisa en la siguiente vela"
                                     )
                                     send_telegram(msg)
                                     sent_signals.add(seq_id)
@@ -198,7 +201,7 @@ def run_fvg_v3_strategy(symbol, timeframe):
         pass
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Actualizado*\n✅ Parámetros de barrido (96 velas), alertas limpias y métrica de volatilidad añadidas.")
+    send_telegram("🚀 *Bot FVG V3 Sincronizado*\n✅ Sintonizado a la perfección: Alerta exactamente en la siguiente vela del FVG.")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
