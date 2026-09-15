@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS GLOBALES (FVG V3 - SOLO 3M)
+# PARÁMETROS GLOBALES (ESTRATEGIA FVG V3)
 # ==========================================
 BB_LENGTH = 20
 BB_STD = 2.0
@@ -21,15 +21,12 @@ RSI_LENGTH = 14
 RSI_OVERBOUGHT = 65
 RSI_OVERSOLD = 35
 
-MAX_VALIDEZ_ATR = 10.0  
-LOOKBACK_SWEEP = 40     # Velas hacia atrás para rastrear la secuencia
+MAX_VALIDEZ_ATR = 3.0    # Regla 4: Cancelación si el precio supera 3 ATR
+MIN_GAP_ATR = 0.0        # Solicitado: Tamaño de FVG mínimo en 0 (acepta cualquier FVG > 0)
+LOOKBACK_BARS = 60       # Ventana de rastreo (máximo 24h equivaldría a más, pero 60 velas de 3m es suficiente para setups activos)
 
-# Filtro de tamaño mínimo para la vela de barrido (en porcentaje de cuerpo/rango)
-MIN_SWEEP_CANDLE_SIZE_PCT = 0.4  # Puedes ajustarlo si quieres que la vela sea más grande
-
-SL_PERCENT = 0.050      
-TP1_PERCENT = 0.007     
-TP2_PERCENT = 0.015     
+TP_PERCENT = 0.040       # Configuración óptima del documento V3: +4% TP
+SL_PERCENT = 0.030       # Configuración óptima del documento V3: -3% SL
 
 sent_signals = set()
 
@@ -88,209 +85,196 @@ exchange = ccxt.binance(
 )
 
 def send_telegram(message):
-  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-  payload = {
-      "chat_id": TELEGRAM_CHAT_ID,
-      "text": message,
-      "parse_mode": "Markdown",
-  }
-  try:
-    requests.post(url, json=payload, timeout=10)
-  except Exception as e:
-    print(f"Error Telegram: {e}", flush=True)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Error Telegram: {e}", flush=True)
 
-def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
-  try:
-    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=150)
-    if not bars or len(bars) < 120:
-      return
+def run_fvg_v3_strategy(symbol, timeframe):
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=150)
+        if not bars or len(bars) < 120:
+            return
 
-    df = pd.DataFrame(
-        bars, columns=["time", "open", "high", "low", "close", "volume"]
-    )
-    df = df.iloc[:-1].copy()
-    n = len(df)
-
-    last_candle_time = df["time"].iloc[-1]
-    signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
-    if signal_key in sent_signals:
-      return
-
-    # --- 1. INDICADORES ---
-    high_low = df["high"] - df["low"]
-    high_close = (df["high"] - df["close"].shift()).abs()
-    low_close = (df["low"] - df["close"].shift()).abs()
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["atr"] = true_range.rolling(window=14).mean()
-    atr_val = df["atr"].iloc[-1]
-
-    df["sma"] = df["close"].rolling(window=BB_LENGTH).mean()
-    df["std"] = df["close"].rolling(window=BB_LENGTH).std()
-    df["upper_bb"] = df["sma"] + (BB_STD * df["std"])
-    df["lower_bb"] = df["sma"] - (BB_STD * df["std"])
-
-    delta = df["close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-    current_close = df["close"].iloc[-1]
-
-    # Calcular tamaño de cada vela en % (cuerpo o rango total)
-    df["candle_size_pct"] = ((df["high"] - df["low"]) / df["low"]) * 100
-
-    # --- 2. RASTREO ESTRICTO DE ESTADOS (EVITA SEÑALES CRUZADAS) ---
-    long_state = "NONE"
-    sweep_low_long = float('inf')
-
-    short_state = "NONE"
-    sweep_high_short = -float('inf')
-
-    start_idx = max(0, n - LOOKBACK_SWEEP)
-
-    for i in range(start_idx, n):
-        c_size = df["candle_size_pct"].iloc[i]
-
-        # --- LÓGICA LONG ---
-        # Exigimos que toque la banda, el RSI esté en sobreventa y que la vela tenga un tamaño mínimo real
-        is_sweep_long = (
-            (df['low'].iloc[i] <= df['lower_bb'].iloc[i]) and 
-            (df['rsi'].iloc[i] <= RSI_OVERSOLD) and
-            (c_size >= MIN_SWEEP_CANDLE_SIZE_PCT)
+        df = pd.DataFrame(
+            bars, columns=["time", "open", "high", "low", "close", "volume"]
         )
-        
-        if is_sweep_long:
-            long_state = "SWEEP"
-            sweep_low_long = df['low'].iloc[i]  # Línea blanca / mínimo del barrido
-            short_state = "NONE" # Limpiamos el corto para evitar contradicciones
-            
-        elif long_state == "SWEEP":
-            # Si el precio se va muy lejos o anula, o si la vela cierra con cuerpo por debajo de la línea blanca
-            if df['close'].iloc[i] < sweep_low_long:
-                long_state = "MITIGATED"
+        # Descartamos la vela actual en formación
+        df = df.iloc[:-1].copy()
+        n = len(df)
 
-        # --- LÓGICA SHORT ---
-        is_sweep_short = (
-            (df['high'].iloc[i] >= df['upper_bb'].iloc[i]) and 
-            (df['rsi'].iloc[i] >= RSI_OVERBOUGHT) and
-            (c_size >= MIN_SWEEP_CANDLE_SIZE_PCT)
-        )
-        
-        if is_sweep_short:
-            short_state = "SWEEP"
-            sweep_high_short = df['high'].iloc[i] # Línea blanca / máximo del barrido
-            long_state = "NONE" # Limpiamos el largo para evitar contradicciones
-            
-        elif short_state == "SWEEP":
-            # Si la vela cierra con cuerpo por encima de la línea blanca
-            if df['close'].iloc[i] > sweep_high_short:
-                short_state = "MITIGATED"
+        last_candle_time = df["time"].iloc[-1]
+        signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
+        if signal_key in sent_signals:
+            return
 
-    valid_long_sequence = (long_state == "MITIGATED")
-    valid_short_sequence = (short_state == "MITIGATED")
+        # --- INDICADORES TÉCNICOS ---
+        high_low = df["high"] - df["low"]
+        high_close = (df["high"] - df["close"].shift()).abs()
+        low_close = (df["low"] - df["close"].shift()).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df["atr"] = true_range.rolling(window=14).mean()
 
-    # --- 3. GATILLO: FORMACIÓN DEL FVG ---
-    v1_high = df["high"].iloc[-3]
-    v1_low = df["low"].iloc[-3]
-    v3_low = df["low"].iloc[-1]
-    v3_high = df["high"].iloc[-1]
+        df["sma"] = df["close"].rolling(window=BB_LENGTH).mean()
+        df["std"] = df["close"].rolling(window=BB_LENGTH).std()
+        df["upper_bb"] = df["sma"] + (BB_STD * df["std"])
+        df["lower_bb"] = df["sma"] - (BB_STD * df["std"])
 
-    fvg_bullish = (v3_low > v1_high)
-    fvg_bearish = (v3_high < v1_low)
-    
-    fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
-    fvg_valido = (fvg_gap > 0) and (abs(current_close - ((v1_high + v3_low) / 2.0 if fvg_bullish else (v3_high + v1_low) / 2.0)) <= (atr_val * MAX_VALIDEZ_ATR))
+        delta = df["close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=RSI_LENGTH).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
+        rs = gain / loss
+        df["rsi"] = 100 - (100 / (1 + rs))
 
-    # --- 4. TAMAÑO VELA IMPULSIVA (%) ---
-    max_setup_size = max(df["candle_size_pct"].iloc[-3], df["candle_size_pct"].iloc[-2], df["candle_size_pct"].iloc[-1])
-    velas_tienen_rango = max_setup_size >= min_candle_size_pct
-    clean_symbol = symbol.replace("/", "") + ".P"
+        current_close = df["close"].iloc[-1]
+        current_atr = df["atr"].iloc[-1]
 
-    # --- 5. SEÑALES CON DIRECCIÓN DE ENTRADAS CORREGIDA ---
-    # LONG (Entradas medidas desde la base inferior del FVG hacia arriba)
-    if valid_long_sequence and fvg_bullish and fvg_valido and velas_tienen_rango:
-      fvg_bottom = v1_high
-      fvg_top = v3_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
-      fvg_final = fvg_bottom                 
-      
-      sl = v1_low * (1 - SL_PERCENT)
-      tp1 = fvg_final * (1 + TP1_PERCENT)
-      tp2 = fvg_final * (1 + TP2_PERCENT)
+        # --- EVALUACIÓN DE SECUENCIA V3 ---
+        active_direction = "NONE"
+        signal_low = float('inf')
+        signal_high = -float('inf')
+        signal_price = 0.0
+        sweep_confirmed = False
 
-      msg = (
-          f"🟢 *LONG · Secuencia FVG (3m)*\n"
-          f"Par: `{clean_symbol}`\n"
-          f"Rango Impulso: `{max_setup_size:.2f}%`\n"
-          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.6f}`\n"
-          f"📍 Entrada 2 (Final FVG): `{fvg_final:.6f}`\n"
-          f"🎯 TP1 (0.7%): `{tp1:.6f}` | TP2 (1.5%): `{tp2:.6f}`\n"
-          f"🛑 SL (5%): `{sl:.6f}`"
-      )
-      send_telegram(msg)
-      sent_signals.add(signal_key)
+        start_idx = max(0, n - LOOKBACK_BARS)
 
-    # SHORT (Entradas medidas desde la parte alta del FVG hacia abajo, como tus líneas azules)
-    if valid_short_sequence and fvg_bearish and fvg_valido and velas_tienen_rango:
-      fvg_bottom = v3_high
-      fvg_top = v1_low
-      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
-      fvg_final = fvg_top                    
-      
-      sl = v1_high * (1 + SL_PERCENT)
-      tp1 = fvg_final * (1 - TP1_PERCENT)
-      tp2 = fvg_final * (1 - TP2_PERCENT)
+        for i in range(start_idx, n - 2):  # Dejamos espacio para el FVG de 3 velas al final
+            # 1. Detección de Señal BOT-S
+            is_bots_long = (df['low'].iloc[i] <= df['lower_bb'].iloc[i]) and (df['rsi'].iloc[i] <= RSI_OVERSOLD)
+            is_bots_short = (df['high'].iloc[i] >= df['upper_bb'].iloc[i]) and (df['rsi'].iloc[i] >= RSI_OVERBOUGHT)
 
-      msg = (
-          f"🔴 *SHORT · Secuencia FVG (3m)*\n"
-          f"Par: `{clean_symbol}`\n"
-          f"Rango Impulso: `{max_setup_size:.2f}%`\n"
-          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.6f}`\n"
-          f"📍 Entrada 2 (Final FVG): `{fvg_final:.6f}`\n"
-          f"🎯 TP1 (0.7%): `{tp1:.6f}` | TP2 (1.5%): `{tp2:.6f}`\n"
-          f"🛑 SL (5%): `{sl:.6f}`"
-      )
-      send_telegram(msg)
-      sent_signals.add(signal_key)
+            if is_bots_long:
+                active_direction = "LONG"
+                signal_low = df['low'].iloc[i]
+                signal_price = df['close'].iloc[i]
+                sweep_confirmed = False
 
-    if len(sent_signals) > 1000:
-      sent_signals.clear()
+            elif is_bots_short:
+                active_direction = "SHORT"
+                signal_high = df['high'].iloc[i]
+                signal_price = df['close'].iloc[i]
+                sweep_confirmed = False
 
-  except Exception as e:
-    print(f"⚠️ Error procesando {symbol} en 3m: {e}", flush=True)
+            # 2. Barrido de Liquidez (Cierre por debajo/encima de la señal)
+            if active_direction == "LONG" and not sweep_confirmed:
+                if df['close'].iloc[i] < signal_low:
+                    sweep_confirmed = True
+
+            elif active_direction == "SHORT" and not sweep_confirmed:
+                if df['close'].iloc[i] > signal_high:
+                    sweep_confirmed = True
+
+            # 3. Regla de Cancelación (Si rebasa 3 ATR a favor antes de formar FVG)
+            if sweep_confirmed:
+                atr_at_i = df['atr'].iloc[i]
+                if active_direction == "LONG" and (df['high'].iloc[i] - signal_price) > (3 * atr_at_i):
+                    active_direction = "NONE"
+                    sweep_confirmed = False
+                elif active_direction == "SHORT" and (signal_price - df['low'].iloc[i]) > (3 * atr_at_i):
+                    active_direction = "NONE"
+                    sweep_confirmed = False
+
+        if not sweep_confirmed or active_direction == "NONE":
+            return
+
+        # --- 4. DETECCIÓN DE FVG (ÚLTIMAS 3 VELAS) ---
+        v1_high = df["high"].iloc[-3]
+        v1_low = df["low"].iloc[-3]
+        v3_low = df["low"].iloc[-1]
+        v3_high = df["high"].iloc[-1]
+
+        clean_symbol = symbol.replace("/", "") + ".P"
+
+        if active_direction == "LONG":
+            fvg_gap = v3_low - v1_high
+            fvg_atr_ratio = fvg_gap / current_atr if current_atr > 0 else 0
+
+            # Cumple condición de FVG válido (gap_atr >= 0.0)
+            if fvg_gap > 0 and fvg_atr_ratio >= MIN_GAP_ATR:
+                fvg_mid = (v1_high + v3_low) / 2.0
+                
+                # Verificación de banda de validez (dentro de 3 ATR)
+                if abs(fvg_mid - signal_price) <= (3 * current_atr):
+                    sl = fvg_mid * (1 - SL_PERCENT)
+                    tp = fvg_mid * (1 + TP_PERCENT)
+
+                    msg = (
+                        f"🟢 *ESTRATEGIA FVG V3 · LONG*\n"
+                        f"Par: `{clean_symbol}`\n"
+                        f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
+                        f"🎯 TP (+4%): `{tp:.6f}`\n"
+                        f"🛑 SL (-3%): `{sl:.6f}`\n"
+                        f"Rango Gap/ATR: `{fvg_atr_ratio:.2f}`"
+                    )
+                    send_telegram(msg)
+                    sent_signals.add(signal_key)
+
+        elif active_direction == "SHORT":
+            fvg_gap = v1_low - v3_high
+            fvg_atr_ratio = fvg_gap / current_atr if current_atr > 0 else 0
+
+            if fvg_gap > 0 and fvg_atr_ratio >= MIN_GAP_ATR:
+                fvg_mid = (v1_low + v3_high) / 2.0
+
+                if abs(fvg_mid - signal_price) <= (3 * current_atr):
+                    sl = fvg_mid * (1 + SL_PERCENT)
+                    tp = fvg_mid * (1 - TP_PERCENT)
+
+                    msg = (
+                        f"🔴 *ESTRATEGIA FVG V3 · SHORT*\n"
+                        f"Par: `{clean_symbol}`\n"
+                        f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
+                        f"🎯 TP (+4%): `{tp:.6f}`\n"
+                        f"🛑 SL (-3%): `{sl:.6f}`\n"
+                        f"Rango Gap/ATR: `{fvg_atr_ratio:.2f}`"
+                    )
+                    send_telegram(msg)
+                    sent_signals.add(signal_key)
+
+        if len(sent_signals) > 1000:
+            sent_signals.clear()
+
+    except Exception as e:
+        print(f"⚠️ Error procesando {symbol} en 3m: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG Definitivo*\nFiltro de tamaño de vela de barrido y cálculo de entradas corregidos.")
+    send_telegram("⏰ *Bot FVG V3 Activo*\nLógica de documentación aplicada de forma estricta (TP +4% / SL -3%).")
 
-  while True:
-    now = datetime.now(timezone.utc)
-    seconds_to_next_3m = 180 - ((now.minute % 3) * 60 + now.second)
-    sleep_time = seconds_to_next_3m + 2
+    while True:
+        now = datetime.now(timezone.utc)
+        seconds_to_next_3m = 180 - ((now.minute % 3) * 60 + now.second)
+        sleep_time = seconds_to_next_3m + 2
 
-    if sleep_time < 5:
-      sleep_time += 180
+        if sleep_time < 5:
+            sleep_time += 180
 
-    await asyncio.sleep(sleep_time)
-    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Escaneando mercado (3m)...", flush=True)
-    
-    for symbol in SYMBOLS:
-      run_reversion_strategy(symbol, "3m", 1.0)
-      await asyncio.sleep(0.04)
+        await asyncio.sleep(sleep_time)
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Escaneando mercado (3m)...", flush=True)
+        
+        for symbol in SYMBOLS:
+            run_fvg_v3_strategy(symbol, "3m")
+            await asyncio.sleep(0.04)
 
 async def handle_ping(request):
-  return web.Response(text="Bot FVG Secuencia Definitiva (3m) Activo")
+    return web.Response(text="Bot FVG V3 Estricto Activo")
 
 async def main():
-  app = web.Application()
-  app.router.add_get("/", handle_ping)
-  port = int(os.environ.get("PORT", 10000))
-  runner = web.AppRunner(app)
-  await runner.setup()
-  site = web.TCPSite(runner, "0.0.0.0", port)
-  await site.start()
-  asyncio.create_task(bucle_bot())
-  while True:
-    await asyncio.sleep(3600)
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    port = int(os.environ.get("PORT", 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    asyncio.create_task(bucle_bot())
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-  asyncio.run(main())
+    asyncio.run(main())
