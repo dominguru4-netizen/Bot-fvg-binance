@@ -162,30 +162,31 @@ def run_fvg_v3_strategy(symbol, timeframe):
                                 break
 
             if fvg_found:
-                if k >= len(df) - 2:
-                    seq_id = f"{symbol}_{direction}_{df['time'].iloc[k]}"
-                    if seq_id not in sent_signals:
-                        tp_val = fvg_mid * (1 + TP_PERCENT) if direction == "LONG" else fvg_mid * (1 - TP_PERCENT)
-                        sl_val = fvg_mid * (1 - SL_PERCENT) if direction == "LONG" else fvg_mid * (1 + SL_PERCENT)
-                        
-                        msg = (
-                            f"📌 *Estrategia FVG V3 (3m)*\n"
-                            f"Par: `{symbol.replace('/', '')}.P`\n"
-                            f"Dirección: *{direction}*\n"
-                            f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
-                            f"🎯 TP (+4%): `{tp_val:.6f}`\n"
-                            f"🛑 SL (-3%): `{sl_val:.6f}`\n"
-                            f"✅ Regla cumplida: Señal BOT-S ➔ Barrido Cierre ➔ FVG Válido"
-                        )
-                        send_telegram(msg)
-                        sent_signals.add(seq_id)
+                # Quitamos la restricción restrictiva de las últimas 2 velas para que cante 
+                # la señal exactamente en la vela 'k' donde se forma el FVG (Línea Amarilla)
+                seq_id = f"{symbol}_{direction}_{df['time'].iloc[k]}"
+                if seq_id not in sent_signals:
+                    tp_val = fvg_mid * (1 + TP_PERCENT) if direction == "LONG" else fvg_mid * (1 - TP_PERCENT)
+                    sl_val = fvg_mid * (1 - SL_PERCENT) if direction == "LONG" else fvg_mid * (1 + SL_PERCENT)
+                    
+                    msg = (
+                        f"📌 *Estrategia FVG V3 (3m)*\n"
+                        f"Par: `{symbol.replace('/', '')}.P`\n"
+                        f"Dirección: *{direction}*\n"
+                        f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
+                        f"🎯 TP (+4%): `{tp_val:.6f}`\n"
+                        f"🛑 SL (-3%): `{sl_val:.6f}`\n"
+                        f"✅ Sincronizado en la vela exacta del FVG"
+                    )
+                    send_telegram(msg)
+                    sent_signals.add(seq_id)
 
         if len(sent_signals) > 2000: sent_signals.clear()
     except Exception:
         pass
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Reiniciado (Todas las Monedas)*\n✅ Escaneando universo completo con reglas oficiales.")
+    send_telegram("🚀 *Bot FVG V3 Actualizado*\n✅ Sincronización exacta en la vela del FVG (Línea Amarilla).")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
