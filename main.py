@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 import os
 from aiohttp import web
 import ccxt
-import numpy as np
 import pandas as pd
 import requests
 
@@ -14,239 +13,229 @@ TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
 TELEGRAM_CHAT_ID = "2118999160"
 
 # ==========================================
-# PARÁMETROS OFICIALES FVG V3
+# PARÁMETROS GLOBALES (ESTRATEGIA FVG V3)
 # ==========================================
-BB_LENGTH = 20
-BB_STD = 2.0
-RSI_LENGTH = 14
-RSI_OVERSOLD = 35
-RSI_OVERBOUGHT = 65
+LIMIT_SWEEP = 96
+RECENT_WINDOW = 20
+SL_PERCENT = 0.050
+TP1_PERCENT = 0.007  # 0.7%
+TP2_PERCENT = 0.015  # 1.5%
+MAX_VALIDEZ_ATR = 10.0
 
-TP_PERCENT = 0.04  # +4%  (pendiente de definir regla real, se deja igual por ahora)
-SL_PERCENT = 0.03  # -3%
-WICK_AVG_LENGTH = 10   # nº de velas para calcular el tamaño "normal" de vela
-WICK_MULTIPLIER = 1.5  # la vela que rompe la banda debe ser >= 1.5x esa media
-MAX_SWEEP_CANDLES = 480      # 24 horas en velas de 3m
-FVG_SEARCH_WINDOW = 60       # velas a buscar el primer FVG tras el barrido (~3h)
-
+# Registro para evitar duplicados en la misma vela
 sent_signals = set()
 
+# Fusión de ambas listas (elimina repetidos automáticamente)
 SYMBOLS = list(set([
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
-    "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT",
-    "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT",
+    # --- Lista Original ---
+    "H/USDT", "SKYAI/USDT", "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", 
+    "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", 
+    "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT", 
     "FIL/USDT", "XMR/USDT", "TIA/USDT", "ATOM/USDT", "STX/USDT", "INJ/USDT", "WIF/USDT", "OP/USDT",
-    "ARB/USDT", "THETA/USDT", "GRT/USDT", "RUNE/USDT", "FTM/USDT", "SEI/USDT", "FLOKI/USDT", "BONK/USDT",
-    "JUP/USDT", "AAVE/USDT", "MKR/USDT", "ORDI/USDT", "EGLD/USDT", "SAND/USDT", "EOS/USDT", "MANA/USDT",
-    "XTZ/USDT", "ALGO/USDT", "FLOW/USDT", "AXS/USDT", "GALA/USDT", "SNX/USDT", "NEO/USDT", "KAVA/USDT",
-    "ROSE/USDT", "CHZ/USDT", "IOTA/USDT", "MINA/USDT", "COMP/USDT", "CRV/USDT", "ZEC/USDT", "KSM/USDT",
+    "ARB/USDT", "THETA/USDT", "GRT/USDT", "RUNE/USDT", "FTM/USDT", "SEI/USDT", "FLOKI/USDT", "BONK/USDT", 
+    "JUP/USDT", "AAVE/USDT", "MKR/USDT", "ORDI/USDT", "EGLD/USDT", "SAND/USDT", "EOS/USDT", "MANA/USDT", 
+    "XTZ/USDT", "ALGO/USDT", "FLOW/USDT", "AXS/USDT", "GALA/USDT", "SNX/USDT", "NEO/USDT", "KAVA/USDT", 
+    "ROSE/USDT", "CHZ/USDT", "IOTA/USDT", "MINA/USDT", "COMP/USDT", "CRV/USDT", "ZEC/USDT", "KSM/USDT", 
     "DASH/USDT", "1INCH/USDT", "ENJ/USDT", "BAT/USDT", "WOO/USDT", "GMT/USDT", "LRC/USDT", "DYDX/USDT",
-    "CFX/USDT", "CKB/USDT", "AR/USDT", "BLUR/USDT", "ARKM/USDT", "STRK/USDT", "ENA/USDT", "TNSR/USDT",
-    "W/USDT", "OM/USDT", "BOME/USDT", "NOT/USDT", "IO/USDT", "ZK/USDT", "ZRO/USDT", "TURBO/USDT",
-    "LISTA/USDT", "DOGS/USDT", "CATI/USDT", "HMSTR/USDT", "EIGEN/USDT", "NEIRO/USDT", "MEW/USDT",
-    "MEME/USDT", "BEAM/USDT", "RONIN/USDT", "PIXEL/USDT", "ALT/USDT", "MANTA/USDT", "XAI/USDT",
-    "ACE/USDT", "NFP/USDT", "AI/USDT", "PORTAL/USDT", "AEVO/USDT", "ETHFI/USDT", "SAGA/USDT", "OMNI/USDT",
-    "REZ/USDT", "BB/USDT", "BANANA/USDT", "SYN/USDT", "PENDLE/USDT", "CELO/USDT", "ONE/USDT", "HOT/USDT",
-    "ZIL/USDT", "RVN/USDT", "ANKR/USDT", "AUDIO/USDT", "LDO/USDT", "STORJ/USDT", "SKL/USDT", "ICX/USDT",
-    "ZRX/USDT", "ONT/USDT", "WAXP/USDT", "SPELL/USDT", "SLP/USDT", "ALPHA/USDT", "COTI/USDT", "ZEN/USDT",
+    "CFX/USDT", "CKB/USDT", "AR/USDT", "BLUR/USDT", "ARKM/USDT", "STRK/USDT", "ENA/USDT", "TNSR/USDT", 
+    "W/USDT", "OM/USDT", "BOME/USDT", "NOT/USDT", "IO/USDT", "ZK/USDT", "ZRO/USDT", "TURBO/USDT", 
+    "LISTA/USDT", "DOGS/USDT", "CATI/USDT", "HMSTR/USDT", "EIGEN/USDT", "NEIRO/USDT", "MEW/USDT", 
+    "MEME/USDT", "BEAM/USDT", "RONIN/USDT", "PIXEL/USDT", "ALT/USDT", "MANTA/USDT", "XAI/USDT", 
+    "ACE/USDT", "NFP/USDT", "AI/USDT", "PORTAL/USDT", "AEVO/USDT", "ETHFI/USDT", "SAGA/USDT", "OMNI/USDT", 
+    "REZ/USDT", "BB/USDT", "BANANA/USDT", "SYN/USDT", "PENDLE/USDT", "CELO/USDT", "ONE/USDT", "HOT/USDT", 
+    "ZIL/USDT", "RVN/USDT", "ANKR/USDT", "AUDIO/USDT", "LDO/USDT", "STORJ/USDT", "SKL/USDT", "ICX/USDT", 
+    "ZRX/USDT", "ONT/USDT", "WAXP/USDT", "SPELL/USDT", "SLP/USDT", "ALPHA/USDT", "COTI/USDT", "ZEN/USDT", 
     "STRAX/USDT", "SXP/USDT", "C98/USDT", "CHR/USDT", "OXT/USDT", "NMR/USDT", "TRB/USDT", "BAND/USDT",
-    "RLC/USDT", "API3/USDT", "TRU/USDT", "BADGER/USDT", "POND/USDT", "PERP/USDT", "ALICE/USDT", "SUPER/USDT",
-    "UNFI/USDT", "LIT/USDT", "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT",
-    "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT", "BSW/USDT", "CVX/USDT",
-    "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT", "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT",
-    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT", "HBAR/USDT"
+    "RLC/USDT", "API3/USDT", "TRU/USDT", "BADGER/USDT", "POND/USDT", "PERP/USDT", "ALICE/USDT", "SUPER/USDT", 
+    "UNFI/USDT", "LIT/USDT", "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT", 
+    "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT", "BSW/USDT", "CVX/USDT", 
+    "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT", "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT", 
+    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT",
+    
+    # --- Lista Nueva ---
+    "0G/USDT", "1000BONK/USDT", "1000PEPE/USDT", "AAVE/USDT", "ACU/USDT", "ADA/USDT",
+    "AERO/USDT", "AIA/USDT", "AKE/USDT", "ALGO/USDT", "APE/USDT", "APT/USDT", "ARB/USDT",
+    "ASR/USDT", "ASTER/USDT", "ATH/USDT", "ATOM/USDT", "AVAX/USDT", "AVNT/USDT", "BANK/USDT",
+    "BB/USDT", "BEAT/USDT", "BIO/USDT", "BNB/USDT", "BOME/USDT", "BROCCOLIF3B/USDT", "BSV/USDT",
+    "BTC/USDT", "B/USDT", "C98/USDT", "CAKE/USDT", "CC/USDT", "CELR/USDT", "CHIP/USDT", "CHR/USDT",
+    "CHZ/USDT", "COAI/USDT", "CRV/USDT", "DASH/USDT", "DEXE/USDT", "DIA/USDT", "DOT/USDT",
+    "DYDX/USDT", "EIGEN/USDT", "ELSA/USDT", "ENS/USDT", "ETC/USDT", "ETHFI/USDT", "ETH/USDT",
+    "FARTCOIN/USDT", "FF/USDT", "FIGHT/USDT", "FIL/USDT", "FLUX/USDT", "FOGO/USDT", "GENIUS/USDT",
+    "GIGGLE/USDT", "GMX/USDT", "GRASS/USDT", "GRIFFAIN/USDT", "GRT/USDT", "GUN/USDT", "GWEI/USDT",
+    "HBAR/USDT", "H/USDT", "HYPE/USDT", "ICNT/USDT", "ICP/USDT", "ID/USDT", "INX/USDT", "IOTA/USDT",
+    "JASMY/USDT", "JOE/USDT", "JTO/USDT", "JUP/USDT", "KAS/USDT", "KAT/USDT", "KITE/USDT",
+    "LAYER/USDT", "LDO/USDT", "LINK/USDT", "LIT/USDT", "LTC/USDT", "MANA/USDT", "MANTRA/USDT",
+    "METIS/USDT", "MET/USDT", "MON/USDT", "MORPHO/USDT", "MOVR/USDT", "MUBARAK/USDT", "NEAR/USDT",
+    "NIGHT/USDT", "OG/USDT", "ONDO/USDT", "ONE/USDT", "ONT/USDT", "OP/USDT", "PENGU/USDT",
+    "PLUME/USDT", "POL/USDT", "PUMP/USDT", "QNT/USDT", "Q/USDT", "RAYSOL/USDT", "RENDER/USDT",
+    "RIVER/USDT", "RLC/USDT", "SAFE/USDT", "SAND/USDT", "SCRT/USDT", "SEI/USDT", "SHELL/USDT",
+    "SKL/USDT", "SKR/USDT", "SKYAI/USDT", "SKY/USDT", "SOON/USDT", "SPORTFUN/USDT", "SPX/USDT",
+    "SSV/USDT", "STRK/USDT", "STX/USDT", "SUI/USDT", "SYRUP/USDT", "TAO/USDT", "THETA/USDT",
+    "THE/USDT", "TIA/USDT", "TRB/USDT", "TRIA/USDT", "TRUMP/USDT", "TRX/USDT", "UB/USDT", "UNI/USDT",
+    "VET/USDT", "VIRTUAL/USDT", "WAXP/USDT", "WIF/USDT", "WLD/USDT", "WLFI/USDT", "XLM/USDT",
+    "XMR/USDT", "XPL/USDT", "XRP/USDT", "XVG/USDT", "ZAMA/USDT", "ZEN/USDT"
 ]))
 
-exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-
+exchange = ccxt.binance(
+    {"enableRateLimit": True, "options": {"defaultType": "swap"}}
+)
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-    except Exception as e:
-        print(f"Error Telegram: {e}", flush=True)
+  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+  payload = {
+      "chat_id": TELEGRAM_CHAT_ID,
+      "text": message,
+      "parse_mode": "Markdown",
+  }
+  try:
+    requests.post(url, json=payload, timeout=10)
+  except Exception as e:
+    print(f"Error Telegram: {e}", flush=True)
 
+def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
+  try:
+    bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=150)
+    if not bars or len(bars) < 120:
+      return
 
-def run_fvg_v3_strategy(symbol, timeframe):
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=350)
-        if not bars or len(bars) < 120:
-            return
-        df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
+    df = pd.DataFrame(
+        bars, columns=["time", "open", "high", "low", "close", "volume"]
+    )
+    df = df.iloc[:-1].copy()
 
-        # ---- Indicadores base ----
-        df["sma"] = df["close"].rolling(window=BB_LENGTH).mean()
-        df["std"] = df["close"].rolling(window=BB_LENGTH).std(ddof=0)
-        df["upper_bb"] = df["sma"] + (BB_STD * df["std"])
-        df["lower_bb"] = df["sma"] - (BB_STD * df["std"])
+    last_candle_time = df["time"].iloc[-1]
+    signal_key = f"{symbol}_{timeframe}_{last_candle_time}"
+    if signal_key in sent_signals:
+      return
 
-        delta = df["close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        alpha = 1 / RSI_LENGTH
-        df["avg_gain"] = gain.ewm(alpha=alpha, min_periods=RSI_LENGTH, adjust=False).mean()
-        df["avg_loss"] = loss.ewm(alpha=alpha, min_periods=RSI_LENGTH, adjust=False).mean()
-        # Evita división por cero cuando avg_loss = 0 (tendencia sin velas rojas)
-        rs = df["avg_gain"] / df["avg_loss"].replace(0, np.nan)
-        df["rsi"] = 100 - (100 / (1 + rs))
-        df["rsi"] = df["rsi"].fillna(100)
+    # --- ATR ---
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df["atr"] = true_range.rolling(window=14).mean()
+    atr_val = df["atr"].iloc[-1]
 
-        df["prev_close"] = df["close"].shift(1)
-        df["tr"] = df[["high", "low", "prev_close"]].apply(
-            lambda row: max(row["high"] - row["low"],
-                             abs(row["high"] - row["prev_close"]),
-                             abs(row["low"] - row["prev_close"])), axis=1
-        )
-        df["atr"] = df["tr"].rolling(window=14).mean()
+    # --- FILTRO SWEEP ---
+    min_previo = df["low"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].min()
+    max_previo = df["high"].iloc[-(LIMIT_SWEEP + RECENT_WINDOW) : -RECENT_WINDOW].max()
+    
+    swept_low = df["low"].iloc[-RECENT_WINDOW:].min() < min_previo
+    swept_high = df["high"].iloc[-RECENT_WINDOW:].max() > max_previo
 
-        # ---- Tamaño de la vela (rango high-low) y su media de referencia ----
-        df["candle_range"] = df["high"] - df["low"]
-        # Media de referencia SIN incluir la propia vela (shift 1), para no
-        # inflar la media con el tamaño de la vela que estamos evaluando.
-        df["avg_candle_range"] = df["candle_range"].rolling(window=WICK_AVG_LENGTH).mean().shift(1)
+    # --- RECUADRO FVG (Velas v1, v2, v3) ---
+    v1_high = df["high"].iloc[-3]
+    v1_low = df["low"].iloc[-3]
+    v3_low = df["low"].iloc[-1]
+    v3_high = df["high"].iloc[-1]
 
-        # ---- Recorremos buscando señales BOT-S confirmadas ----
-        for i in range(30, len(df) - 1):
-            prev_low = df["low"].iloc[i - 1]
-            prev_high = df["high"].iloc[i - 1]
-            prev_rsi = df["rsi"].iloc[i - 1]
-            prev_lower = df["lower_bb"].iloc[i - 1]
-            prev_upper = df["upper_bb"].iloc[i - 1]
-            prev_candle_range = df["candle_range"].iloc[i - 1]
-            prev_avg_range = df["avg_candle_range"].iloc[i - 1]
+    fvg_bullish = v3_low > v1_high
+    fvg_bearish = v3_high < v1_low
+    fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
+    fvg_valido = (fvg_gap > 0) and (fvg_gap <= atr_val * MAX_VALIDEZ_ATR)
 
-            c_open, c_close = df["open"].iloc[i], df["close"].iloc[i]
+    # --- TAMAÑO DE VELA IMPULSIVA (%) ---
+    size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
+    size_v2 = ((df["high"].iloc[-2] - df["low"].iloc[-2]) / df["low"].iloc[-2] * 100)
+    size_v3 = ((df["high"].iloc[-1] - df["low"].iloc[-1]) / df["low"].iloc[-1] * 100)
+    max_setup_size = max(size_v1, size_v2, size_v3)
 
-            # Vela de ruptura válida: al menos WICK_MULTIPLIER veces el tamaño "normal"
-            valid_break_candle = (
-                pd.notna(prev_avg_range) and prev_avg_range > 0
-                and prev_candle_range >= WICK_MULTIPLIER * prev_avg_range
-            )
+    velas_tienen_rango = max_setup_size >= min_candle_size_pct
+    clean_symbol = symbol.replace("/", "") + ".P"
 
-            is_bot_s_long = (
-                (prev_low < prev_lower) and (prev_rsi <= RSI_OVERSOLD)
-                and (c_close > c_open) and valid_break_candle
-            )
-            is_bot_s_short = (
-                (prev_high > prev_upper) and (prev_rsi >= RSI_OVERBOUGHT)
-                and (c_close < c_open) and valid_break_candle
-            )
+    # --- SEÑAL LONG ---
+    if fvg_bullish and fvg_valido and swept_low and velas_tienen_rango:
+      fvg_bottom = v1_high
+      fvg_top = v3_low
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
+      fvg_final = fvg_bottom                 
+      
+      sl = v1_low * (1 - SL_PERCENT)
+      tp1 = fvg_final * (1 + TP1_PERCENT)
+      tp2 = fvg_final * (1 + TP2_PERCENT)
 
-            if not is_bot_s_long and not is_bot_s_short:
-                continue
+      msg = (
+          f"🟢 *LONG · FVG ({timeframe})*\n"
+          f"Par: `{clean_symbol}`\n"
+          f"Rango Vela: `{max_setup_size:.2f}%`\n"
+          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
+          f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
+          f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
+          f"🛑 SL: `{sl:.4f}`"
+      )
+      send_telegram(msg)
+      sent_signals.add(signal_key)
 
-            direction = "LONG" if is_bot_s_long else "SHORT"
-            sig_price = c_close
-            extreme_val = prev_low if direction == "LONG" else prev_high
+    # --- SEÑAL SHORT ---
+    if fvg_bearish and fvg_valido and swept_high and velas_tienen_rango:
+      fvg_bottom = v3_high
+      fvg_top = v1_low
+      fvg_mid = (fvg_bottom + fvg_top) / 2.0  
+      fvg_final = fvg_top                    
+      
+      sl = v1_high * (1 + SL_PERCENT)
+      tp1 = fvg_final * (1 - TP1_PERCENT)
+      tp2 = fvg_final * (1 - TP2_PERCENT)
 
-            # ---- 2. Barrido de liquidez (cierre más allá del extremo de la señal) ----
-            swept = False
-            sweep_idx = -1
+      msg = (
+          f"🔴 *SHORT · FVG ({timeframe})*\n"
+          f"Par: `{clean_symbol}`\n"
+          f"Rango Vela: `{max_setup_size:.2f}%`\n"
+          f"📍 Entrada 1 (50% FVG): `{fvg_mid:.4f}`\n"
+          f"📍 Entrada 2 (Final FVG): `{fvg_final:.4f}`\n"
+          f"🎯 TP1 (0.7%): `{tp1:.4f}` | TP2 (1.5%): `{tp2:.4f}`\n"
+          f"🛑 SL: `{sl:.4f}`"
+      )
+      send_telegram(msg)
+      sent_signals.add(signal_key)
 
-            for j in range(i + 1, min(i + 1 + MAX_SWEEP_CANDLES, len(df))):
-                j_close = df["close"].iloc[j]
-                curr_atr = df["atr"].iloc[j]
+    if len(sent_signals) > 1000:
+      sent_signals.clear()
 
-                # Cancelación: el precio se va >3 ATR a favor antes de barrer
-                if direction == "LONG" and (df["high"].iloc[j] - sig_price) > (3 * curr_atr):
-                    break
-                if direction == "SHORT" and (sig_price - df["low"].iloc[j]) > (3 * curr_atr):
-                    break
-
-                if direction == "LONG" and j_close < extreme_val:
-                    swept = True
-                    sweep_idx = j
-                    break
-                elif direction == "SHORT" and j_close > extreme_val:
-                    swept = True
-                    sweep_idx = j
-                    break
-
-            if not swept:
-                continue
-
-            # ---- 3. Primer FVG que se forme tras el barrido (sin filtro de tamaño) ----
-            # OJO: empieza en sweep_idx + 1, NO en sweep_idx, para que el hueco
-            # se forme realmente con velas posteriores al barrido.
-            fvg_found = False
-            fvg_mid = 0.0
-            fvg_k = None
-
-            search_end = min(sweep_idx + 1 + FVG_SEARCH_WINDOW, len(df))
-            for k in range(sweep_idx + 1, search_end):
-                if k - 2 < 0:
-                    continue
-                if direction == "LONG":
-                    if (df["low"].iloc[k] > df["high"].iloc[k - 2]) and (df["close"].iloc[k - 1] > df["open"].iloc[k - 1]):
-                        fvg_mid = (df["high"].iloc[k - 2] + df["low"].iloc[k]) / 2.0
-                        fvg_found = True
-                        fvg_k = k
-                        break
-                else:
-                    if (df["high"].iloc[k] < df["low"].iloc[k - 2]) and (df["close"].iloc[k - 1] < df["open"].iloc[k - 1]):
-                        fvg_mid = (df["low"].iloc[k - 2] + df["high"].iloc[k]) / 2.0
-                        fvg_found = True
-                        fvg_k = k
-                        break
-
-            if not fvg_found:
-                continue
-
-            # Dedup por símbolo + dirección + vela del FVG (ya no dependemos
-            # de "estar en las últimas 2 velas", que era lo que bloqueaba casi todo)
-            seq_id = f"{symbol}_{direction}_{df['time'].iloc[fvg_k]}"
-            if seq_id in sent_signals:
-                continue
-
-            tp_val = fvg_mid * (1 + TP_PERCENT) if direction == "LONG" else fvg_mid * (1 - TP_PERCENT)
-            sl_val = fvg_mid * (1 - SL_PERCENT) if direction == "LONG" else fvg_mid * (1 + SL_PERCENT)
-
-            msg = (
-                f"📌 *Estrategia FVG V3 (3m)*\n"
-                f"Par: `{symbol.replace('/', '')}.P`\n"
-                f"Dirección: *{direction}*\n"
-                f"📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n"
-                f"🎯 TP (+4%): `{tp_val:.6f}`\n"
-                f"🛑 SL (-3%): `{sl_val:.6f}`\n"
-                f"✅ Señal BOT-S ➔ Barrido (cierre) ➔ Primer FVG tras el barrido"
-            )
-            send_telegram(msg)
-            sent_signals.add(seq_id)
-
-        if len(sent_signals) > 2000:
-            sent_signals.clear()
-    except Exception as e:
-        print(f"Error en {symbol}: {e}", flush=True)
-
+  except Exception as e:
+    print(f"⚠️ Error procesando {symbol} en {timeframe}: {e}", flush=True)
 
 async def bucle_bot():
-    send_telegram("🚀 *Bot FVG V3 Reiniciado (versión corregida)*\n✅ Bug de filtro de últimas velas eliminado.\n✅ Primer FVG post-barrido, cualquier tamaño.\n✅ Filtro de mecha de rechazo (1.5x media) añadido.")
-    while True:
-        now = datetime.now(timezone.utc)
-        sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
-        if sleep_time < 5:
-            sleep_time += 180
-        await asyncio.sleep(sleep_time)
-        for symbol in SYMBOLS:
-            run_fvg_v3_strategy(symbol, "3m")
-            await asyncio.sleep(0.04)
+  send_telegram("⏰ *Bot FVG V3 Activo (Listas Fusionadas)*\nEscaneando 5m y 15m.")
 
+  while True:
+    now = datetime.now(timezone.utc)
+    seconds_to_next_5m = 300 - ((now.minute % 5) * 60 + now.second)
+    sleep_time = seconds_to_next_5m + 2
+
+    if sleep_time < 5:
+      sleep_time += 300
+
+    await asyncio.sleep(sleep_time)
+
+    now_awoke = datetime.now(timezone.utc)
+    es_cuarto_de_hora = now_awoke.minute % 15 == 0
+
+    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 5m...", flush=True)
+    for symbol in SYMBOLS:
+      run_reversion_strategy(symbol, "5m", 2.0)
+      await asyncio.sleep(0.04)
+
+    if es_cuarto_de_hora:
+      print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 15m...", flush=True)
+      for symbol in SYMBOLS:
+        run_reversion_strategy(symbol, "15m", 3.0)
+        await asyncio.sleep(0.04)
 
 async def handle_ping(request):
-    return web.Response(text="Bot FVG V3 Activo (corregido)")
-
+  return web.Response(text="Bot FVG V3 Activo")
 
 async def main():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
-    asyncio.create_task(bucle_bot())
-    while True:
-        await asyncio.sleep(3600)
-
+  app = web.Application()
+  app.router.add_get("/", handle_ping)
+  port = int(os.environ.get("PORT", 10000))
+  runner = web.AppRunner(app)
+  await runner.setup()
+  site = web.TCPSite(runner, "0.0.0.0", port)
+  await site.start()
+  asyncio.create_task(bucle_bot())
+  while True:
+    await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+  asyncio.run(main())
