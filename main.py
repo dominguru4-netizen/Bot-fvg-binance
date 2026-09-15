@@ -22,6 +22,7 @@ RSI_OVERBOUGHT = 65
 RSI_OVERSOLD = 35
 
 MAX_VALIDEZ_ATR = 10.0  
+LOOKBACK_SWEEP = 40     # Velas hacia atrás para buscar el barrido original
 
 SL_PERCENT = 0.050      
 TP1_PERCENT = 0.007     
@@ -111,7 +112,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     if signal_key in sent_signals:
       return
 
-    # --- 1. INDICADORES TÉCNICOS ---
+    # --- 1. INDICADORES TÉCNICOS GLOBALES ---
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
@@ -129,22 +130,10 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_LENGTH).mean()
     rs = gain / loss
     df["rsi"] = 100 - (100 / (1 + rs))
-
     current_close = df["close"].iloc[-1]
-    current_rsi = df["rsi"].iloc[-1]
-    lower_bb_val = df["lower_bb"].iloc[-1]
-    upper_bb_val = df["upper_bb"].iloc[-1]
 
-    # --- 2. SECUENCIA EXACTA: ROTURA DE BANDA -> MITIGACIÓN CON CUERPO ---
-    # LONG: Vela previa (-2 o -3) rompe la banda inferior, y la vela actual (-1) o anterior mitiga con el cuerpo (cierra dentro o rebotando).
-    broke_lower_bb = (df["low"].iloc[-3] < df["lower_bb"].iloc[-3]) or (df["low"].iloc[-2] < df["lower_bb"].iloc[-2])
-    mitigated_long = (df["close"].iloc[-1] > df["open"].iloc[-1]) and (df["close"].iloc[-1] > df["lower_bb"].iloc[-1]) and (current_rsi <= RSI_OVERSOLD)
-
-    # SHORT: Vela previa (-2 o -3) rompe la banda superior, y la vela actual (-1) o anterior mitiga con el cuerpo.
-    broke_upper_bb = (df["high"].iloc[-3] > df["upper_bb"].iloc[-3]) or (df["high"].iloc[-2] > df["upper_bb"].iloc[-2])
-    mitigated_short = (df["close"].iloc[-1] < df["open"].iloc[-1]) and (df["close"].iloc[-1] < df["upper_bb"].iloc[-1]) and (current_rsi >= RSI_OVERBOUGHT)
-
-    # --- 3. FAIR VALUE GAP (FVG) ---
+    # --- 2. VALIDACIÓN DEL FVG ACTUAL (Las últimas 3 velas) ---
+    n = len(df)
     v1_high = df["high"].iloc[-3]
     v1_low = df["low"].iloc[-3]
     v3_low = df["low"].iloc[-1]
@@ -153,8 +142,48 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     fvg_bullish = v3_low > v1_high
     fvg_bearish = v3_high < v1_low
     fvg_gap = (v3_low - v1_high if fvg_bullish else (v1_low - v3_high if fvg_bearish else 0))
-    
     fvg_valido = (fvg_gap > 0) and (abs(current_close - ((v1_high + v3_low) / 2.0 if fvg_bullish else (v3_high + v1_low) / 2.0)) <= (atr_val * MAX_VALIDEZ_ATR))
+
+    # --- 3. BÚSQUEDA DEL PATRÓN HISTÓRICO (SECUENCIA) ---
+    valid_long_sequence = False
+    valid_short_sequence = False
+    start_idx = max(0, n - LOOKBACK_SWEEP)
+
+    # Lógica LONG (Barrido por abajo -> Rotura con cuerpo al alza)
+    if fvg_bullish and fvg_valido:
+        for i in range(start_idx, n - 2):
+            # Paso A: Vela de Barrido (Rompe BB inferior y RSI en sobreventa)
+            if df['low'].iloc[i] <= df['lower_bb'].iloc[i] and df['rsi'].iloc[i] <= RSI_OVERSOLD:
+                sweep_high = df['high'].iloc[i] # Máximo de la vela que barrió
+                
+                # Paso B: Confirmación (Una vela posterior cierra por encima del máximo con su cuerpo)
+                mitigada = False
+                for j in range(i + 1, n):
+                    if df['close'].iloc[j] > sweep_high:
+                        mitigada = True
+                        break
+                
+                if mitigada:
+                    valid_long_sequence = True
+                    break # Secuencia completa encontrada
+
+    # Lógica SHORT (Barrido por arriba -> Rotura con cuerpo a la baja)
+    if fvg_bearish and fvg_valido:
+        for i in range(start_idx, n - 2):
+            # Paso A: Vela de Barrido (Rompe BB superior y RSI en sobrecompra)
+            if df['high'].iloc[i] >= df['upper_bb'].iloc[i] and df['rsi'].iloc[i] >= RSI_OVERBOUGHT:
+                sweep_low = df['low'].iloc[i] # Mínimo de la vela que barrió
+                
+                # Paso B: Confirmación (Una vela posterior cierra por debajo del mínimo con su cuerpo)
+                mitigada = False
+                for j in range(i + 1, n):
+                    if df['close'].iloc[j] < sweep_low:
+                        mitigada = True
+                        break
+                
+                if mitigada:
+                    valid_short_sequence = True
+                    break
 
     # --- 4. TAMAÑO DE VELA IMPULSIVA (%) ---
     size_v1 = ((df["high"].iloc[-3] - df["low"].iloc[-3]) / df["low"].iloc[-3] * 100)
@@ -165,8 +194,9 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     velas_tienen_rango = max_setup_size >= min_candle_size_pct
     clean_symbol = symbol.replace("/", "") + ".P"
 
-    # --- SEÑAL LONG ---
-    if fvg_bullish and fvg_valido and broke_lower_bb and mitigated_long and velas_tienen_rango:
+    # --- 5. EMISIÓN DE SEÑALES ---
+    # SEÑAL LONG
+    if fvg_bullish and fvg_valido and valid_long_sequence and velas_tienen_rango:
       fvg_bottom = v1_high
       fvg_top = v3_low
       fvg_mid = (fvg_bottom + fvg_top) / 2.0  
@@ -177,9 +207,9 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 + TP2_PERCENT)
 
       msg = (
-          f"🟢 *LONG · FVG V3 (3m)*\n"
+          f"🟢 *LONG · Secuencia FVG (3m)*\n"
           f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
+          f"Rango Impulso: `{max_setup_size:.2f}%`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.6f}`\n"
           f"📍 Entrada 2 (Final FVG): `{fvg_final:.6f}`\n"
           f"🎯 TP1 (0.7%): `{tp1:.6f}` | TP2 (1.5%): `{tp2:.6f}`\n"
@@ -188,8 +218,8 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       send_telegram(msg)
       sent_signals.add(signal_key)
 
-    # --- SEÑAL SHORT ---
-    if fvg_bearish and fvg_valido and broke_upper_bb and mitigated_short and velas_tienen_rango:
+    # SEÑAL SHORT
+    if fvg_bearish and fvg_valido and valid_short_sequence and velas_tienen_rango:
       fvg_bottom = v3_high
       fvg_top = v1_low
       fvg_mid = (fvg_bottom + fvg_top) / 2.0  
@@ -200,9 +230,9 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
       tp2 = fvg_final * (1 - TP2_PERCENT)
 
       msg = (
-          f"🔴 *SHORT · FVG V3 (3m)*\n"
+          f"🔴 *SHORT · Secuencia FVG (3m)*\n"
           f"Par: `{clean_symbol}`\n"
-          f"Rango Vela: `{max_setup_size:.2f}%` | RSI: `{current_rsi:.1f}`\n"
+          f"Rango Impulso: `{max_setup_size:.2f}%`\n"
           f"📍 Entrada 1 (50% FVG): `{fvg_mid:.6f}`\n"
           f"📍 Entrada 2 (Final FVG): `{fvg_final:.6f}`\n"
           f"🎯 TP1 (0.7%): `{tp1:.6f}` | TP2 (1.5%): `{tp2:.6f}`\n"
@@ -218,7 +248,7 @@ def run_reversion_strategy(symbol, timeframe, min_candle_size_pct):
     print(f"⚠️ Error procesando {symbol} en 3m: {e}", flush=True)
 
 async def bucle_bot():
-  send_telegram("⏰ *Bot FVG V3 Sincronizado (Rotura + Mitigación con Cuerpo + FVG en 3m)*")
+  send_telegram("⏰ *Bot FVG Secuencia Activo*\nLógica Temporal (BB/RSI -> Rotura Cuerpo -> FVG). Filtro: 1.0%")
 
   while True:
     now = datetime.now(timezone.utc)
@@ -229,16 +259,15 @@ async def bucle_bot():
       sleep_time += 180
 
     await asyncio.sleep(sleep_time)
-
-    now_awoke = datetime.now(timezone.utc)
-    print(f"[{now_awoke.strftime('%H:%M:%S')}] Escaneando 3m...", flush=True)
+    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Escaneando mercado (3m)...", flush=True)
     
+    # Reducimos el filtro del 1.5% al 1.0% para captar entradas limpias de 3 minutos
     for symbol in SYMBOLS:
-      run_reversion_strategy(symbol, "3m", 1.5)
+      run_reversion_strategy(symbol, "3m", 1.0)
       await asyncio.sleep(0.04)
 
 async def handle_ping(request):
-  return web.Response(text="Bot FVG V3 Activo (3m)")
+  return web.Response(text="Bot FVG Secuencia (3m) Activo")
 
 async def main():
   app = web.Application()
