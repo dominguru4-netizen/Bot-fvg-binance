@@ -62,45 +62,22 @@ def send_telegram(message):
         print(f"Error Telegram: {e}", flush=True)
 
 def check_bullish_divergence(df, current_idx, lookback=15):
-    """
-    Detecta divergencia alcista: El precio hace un mínimo más bajo, 
-    pero el RSI hace un mínimo más alto en las últimas 'lookback' velas.
-    """
-    if current_idx < lookback:
-        return False
-    
+    if current_idx < lookback: return False
     curr_low = df['low'].iloc[current_idx]
     curr_rsi = df['rsi'].iloc[current_idx]
-    
-    # Buscar un mínimo anterior dentro de la ventana de análisis
     for j in range(current_idx - 3, current_idx - lookback, -1):
         if j < 0: break
-        prev_low = df['low'].iloc[j]
-        prev_rsi = df['rsi'].iloc[j]
-        
-        # Condición de divergencia alcista: Precio cae más (menor), RSI sube (mayor)
-        if curr_low < prev_low and curr_rsi > prev_rsi:
+        if curr_low < df['low'].iloc[j] and curr_rsi > df['rsi'].iloc[j]:
             return True
     return False
 
 def check_bearish_divergence(df, current_idx, lookback=15):
-    """
-    Detecta divergencia bajista: El precio hace un máximo más alto, 
-    pero el RSI hace un máximo más bajo en las últimas 'lookback' velas.
-    """
-    if current_idx < lookback:
-        return False
-        
+    if current_idx < lookback: return False
     curr_high = df['high'].iloc[current_idx]
     curr_rsi = df['rsi'].iloc[current_idx]
-    
     for j in range(current_idx - 3, current_idx - lookback, -1):
         if j < 0: break
-        prev_high = df['high'].iloc[j]
-        prev_rsi = df['rsi'].iloc[j]
-        
-        # Condición de divergencia bajista: Precio sube más (mayor), RSI baja (menor)
-        if curr_high > prev_high and curr_rsi < prev_rsi:
+        if curr_high > df['high'].iloc[j] and curr_rsi < df['rsi'].iloc[j]:
             return True
     return False
 
@@ -132,8 +109,8 @@ def run_fvg_v3_strategy(symbol, timeframe):
         )
         df['atr'] = df['tr'].rolling(window=14).mean()
 
-        long_state, long_ref_low = 0, 0.0
-        short_state, short_ref_high = 0, 0.0
+        long_state, long_ref_low, long_counter = 0, 0.0, 0
+        short_state, short_ref_high, short_counter = 0, 0.0, 0
 
         for i in range(20, len(df)):
             c_open, c_high, c_low, c_close = df['open'].iloc[i], df['high'].iloc[i], df['low'].iloc[i], df['close'].iloc[i]
@@ -144,16 +121,22 @@ def run_fvg_v3_strategy(symbol, timeframe):
             is_vela_grande = vela_size > c_atr
 
             # =====================================================================
-            # 🔥 KILL SWITCH
+            # 🔥 KILL SWITCH & EXPIRACIÓN DE ESTADOS (Margen ampliado a 12 velas)
             # =====================================================================
-            if long_state > 0 and (c_high >= c_upper_bb or c_rsi >= RSI_OVERBOUGHT): long_state = 0
-            if short_state > 0 and (c_low <= c_lower_bb or c_rsi <= RSI_OVERSOLD): short_state = 0
+            if long_state > 0:
+                long_counter += 1
+                if c_high >= c_upper_bb or c_rsi >= RSI_OVERBOUGHT or long_counter > 12:
+                    long_state, long_counter = 0, 0
+
+            if short_state > 0:
+                short_counter += 1
+                if c_low <= c_lower_bb or c_rsi <= RSI_OVERSOLD or short_counter > 12:
+                    short_state, short_counter = 0, 0
 
             # --- SECUENCIA LONG ---
-            # Exige: Rotura Bollinger + Vela Grande + Divergencia Alcista del RSI
             has_bull_div = check_bullish_divergence(df, i)
             if c_low < c_lower_bb and c_rsi <= RSI_OVERSOLD and is_vela_grande and has_bull_div:
-                long_state, long_ref_low = 1, c_low
+                long_state, long_ref_low, long_counter = 1, c_low, 0
                 
             elif long_state == 1 and c_close < long_ref_low:
                 long_state = 2  # Barrido con cuerpo confirmado
@@ -165,15 +148,14 @@ def run_fvg_v3_strategy(symbol, timeframe):
                         fvg_mid = (prev2_high + c_low) / 2.0
                         seq_id = f"{symbol}_LONG_{df['time'].iloc[i]}"
                         if seq_id not in sent_signals:
-                            send_telegram(f"🟢 *LONG · Setup V3 (3m)*\nPar: `{symbol.replace('/', '')}.P`\n📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n🎯 TP1 (+1%): `{fvg_mid * (1 + TP1_PERCENT):.6f}`\n🛑 SL (-5%): `{fvg_mid * (1 - SL_PERCENT):.6f}`\n✅ Filtro: Divergencia + Rotura + Barrido + FVG")
+                            send_telegram(f"🟢 *LONG · Setup V3 (3m)*\nPar: `{symbol.replace('/', '')}.P`\n📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n🎯 TP1 (+1%): `{fvg_mid * (1 + TP1_PERCENT):.6f}`\n🛑 SL (-5%): `{fvg_mid * (1 - SL_PERCENT):.6f}`\n✅ Filtro Estricto: Divergencia + Rotura + Barrido + FVG")
                             sent_signals.add(seq_id)
-                    long_state = 0 
+                    long_state, long_counter = 0, 0
 
             # --- SECUENCIA SHORT ---
-            # Exige: Rotura Bollinger superior + Vela Grande + Divergencia Bajista del RSI
             has_bear_div = check_bearish_divergence(df, i)
             if c_high > c_upper_bb and c_rsi >= RSI_OVERBOUGHT and is_vela_grande and has_bear_div:
-                short_state, short_ref_high = 1, c_high
+                short_state, short_ref_high, short_counter = 1, c_high, 0
                 
             elif short_state == 1 and c_close > short_ref_high:
                 short_state = 2  # Barrido con cuerpo confirmado
@@ -185,16 +167,16 @@ def run_fvg_v3_strategy(symbol, timeframe):
                         fvg_mid = (prev2_low + c_high) / 2.0
                         seq_id = f"{symbol}_SHORT_{df['time'].iloc[i]}"
                         if seq_id not in sent_signals:
-                            send_telegram(f"🔴 *SHORT · Setup V3 (3m)*\nPar: `{symbol.replace('/', '')}.P`\n📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n🎯 TP1 (+1%): `{fvg_mid * (1 - TP1_PERCENT):.6f}`\n🛑 SL (-5%): `{fvg_mid * (1 + SL_PERCENT):.6f}`\n✅ Filtro: Divergencia + Rotura + Barrido + FVG")
+                            send_telegram(f"🔴 *SHORT · Setup V3 (3m)*\nPar: `{symbol.replace('/', '')}.P`\n📍 Entrada Límite (50% FVG): `{fvg_mid:.6f}`\n🎯 TP1 (+1%): `{fvg_mid * (1 - TP1_PERCENT):.6f}`\n🛑 SL (-5%): `{fvg_mid * (1 + SL_PERCENT):.6f}`\n✅ Filtro Estricto: Divergencia + Rotura + Barrido + FVG")
                             sent_signals.add(seq_id)
-                    short_state = 0 
+                    short_state, long_counter = 0, 0
 
         if len(sent_signals) > 2000: sent_signals.clear()
     except Exception:
         pass
 
 async def bucle_bot():
-    send_telegram("⏰ *Bot Actualizado con Filtro de Divergencia RSI*\n✅ Integrado detector de divergencias alcistas y bajistas.\n✅ Filtro de vela grande (ATR) + Kill Switch.")
+    send_telegram("⏰ *Bot Actualizado (Ventana de 12 velas)*\n✅ Margen ampliado para capturar barridos que tardan un poco más en completarse.\n✅ Filtros estrictos activos.")
     while True:
         now = datetime.now(timezone.utc)
         sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
@@ -204,7 +186,7 @@ async def bucle_bot():
             run_fvg_v3_strategy(symbol, "3m")
             await asyncio.sleep(0.04)
 
-async def handle_ping(request): return web.Response(text="Bot Activo con Divergencias RSI")
+async def handle_ping(request): return web.Response(text="Bot Activo con Margen Ampliado")
 
 async def main():
     app = web.Application()
