@@ -206,28 +206,26 @@ def process_bar(symbol, i, df, st, alert_enabled):
             bull_fvg = st["dir"] == "long" and low > high2
             bear_fvg = st["dir"] == "short" and high < low2
             if bull_fvg or bear_fvg:
+                # Primer FVG que se forma tras el barrido: se acepta directamente,
+                # sin exigir tamaño mínimo ni distancia máxima al precio de la señal.
                 g_top = low if st["dir"] == "long" else low2
                 g_bot = high2 if st["dir"] == "long" else high
-                g_size = g_top - g_bot
-                g_atr = g_size / atr
                 g_mid = (g_top + g_bot) / 2
-                mid_dist_atr = abs(g_mid - st["sig_price"]) / atr
-                if g_atr >= MIN_GAP_ATR and mid_dist_atr <= MAX_BAND_ATR:
-                    st["gap_top"] = g_top
-                    st["gap_bottom"] = g_bot
-                    st["entry_price"] = g_mid
-                    st["tp_price"] = g_mid * (1 + TP_PCT / 100) if st["dir"] == "long" else g_mid * (1 - TP_PCT / 100)
-                    st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
-                    st["state"] = "wait_fill"
-                    if alert_enabled:
-                        send_telegram(
-                            f"📌 *Señal de entrada — FVG formado*\n"
-                            f"Par: `{symbol}`\n"
-                            f"Dirección: *{st['dir'].upper()}*\n"
-                            f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
-                            f"🎯 TP: `{st['tp_price']:.6f}`\n"
-                            f"🛑 SL: `{st['sl_price']:.6f}`"
-                        )
+                st["gap_top"] = g_top
+                st["gap_bottom"] = g_bot
+                st["entry_price"] = g_mid
+                st["tp_price"] = g_mid * (1 + TP_PCT / 100) if st["dir"] == "long" else g_mid * (1 - TP_PCT / 100)
+                st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
+                st["state"] = "wait_fill"
+                if alert_enabled:
+                    send_telegram(
+                        f"📌 *Señal de entrada — FVG formado*\n"
+                        f"Par: `{symbol}`\n"
+                        f"Dirección: *{st['dir'].upper()}*\n"
+                        f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
+                        f"🎯 TP: `{st['tp_price']:.6f}`\n"
+                        f"🛑 SL: `{st['sl_price']:.6f}`"
+                    )
 
     # --- 4) Esperando el llenado de la entrada límite ---
     if st["state"] == "wait_fill":
