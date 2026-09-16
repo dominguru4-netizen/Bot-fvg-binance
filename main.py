@@ -261,7 +261,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
             st["state"] = "idle"   # se fue >3 ATR a favor antes de formar el hueco -> cancelado
         elif elapsed > MAX_SWEEP_BARS:
             st["state"] = "idle"
-        elif i >= 2:
+        elif i >= 2 and df["time"].iloc[i - 2] >= st["sweep_time"]:
             high2 = df["high"].iloc[i - 2]
             low2 = df["low"].iloc[i - 2]
             bull_fvg = st["dir"] == "long" and low > high2
