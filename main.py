@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 import os
 from aiohttp import web
-import ccxt
+import ccxt.async_support as ccxt
 import pandas as pd
 import requests
 
@@ -36,6 +36,8 @@ BODY_MIN_RATIO = 0.30   # la vela de barrido debe tener cuerpo >= 30% de su rang
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
 FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
+POST_CLOSE_DELAY = 8     # segundos de margen tras el cierre de vela antes de pedir datos
+MAX_CONCURRENT_FETCHES = 15   # peticiones simultáneas a Binance (evita rate-limit)
 
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
@@ -250,46 +252,47 @@ def process_bar(symbol, i, df, st, alert_enabled):
     st["last_time"] = bar_time
 
 
-def run_symbol(symbol):
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
-        if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
-            return
-        # Se descarta la última vela porque aún está en formación (no cerrada)
-        df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
-        df = compute_indicators(df)
-
-        st = symbol_state.setdefault(symbol, default_state())
-
-        if not st["initialized"]:
-            # Primera vez que vemos este símbolo: reconstruimos en qué estado
-            # está AHORA MISMO sin mandar alertas de todo el histórico.
-            for i in range(len(df)):
-                process_bar(symbol, i, df, st, alert_enabled=False)
-            st["initialized"] = True
-        else:
-            new_rows = df[df["time"] > st["last_time"]]
-            if new_rows.empty:
+async def run_symbol(symbol, semaphore):
+    async with semaphore:
+        try:
+            bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
+            if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
                 return
-            start_idx = new_rows.index[0]
-            for i in range(start_idx, len(df)):
-                process_bar(symbol, i, df, st, alert_enabled=True)
+            # Se descarta la última vela porque aún está en formación (no cerrada)
+            df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
+            df = compute_indicators(df)
 
-    except Exception as e:
-        print(f"Error en {symbol}: {e}", flush=True)
+            st = symbol_state.setdefault(symbol, default_state())
+
+            if not st["initialized"]:
+                # Primera vez que vemos este símbolo: reconstruimos en qué estado
+                # está AHORA MISMO sin mandar alertas de todo el histórico.
+                for i in range(len(df)):
+                    process_bar(symbol, i, df, st, alert_enabled=False)
+                st["initialized"] = True
+            else:
+                new_rows = df[df["time"] > st["last_time"]]
+                if new_rows.empty:
+                    return
+                start_idx = new_rows.index[0]
+                for i in range(start_idx, len(df)):
+                    process_bar(symbol, i, df, st, alert_enabled=True)
+
+        except Exception as e:
+            print(f"Error en {symbol}: {e}", flush=True)
 
 
 async def bucle_bot():
     send_telegram("🚀 *Bot FVG V3 iniciado* (réplica fiel del indicador Pine)\nSincronizando estado inicial de todos los pares...")
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
     while True:
         now = datetime.now(timezone.utc)
-        sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + 2
+        sleep_time = (180 - ((now.minute % 3) * 60 + now.second)) + POST_CLOSE_DELAY
         if sleep_time < 5:
             sleep_time += 180
         await asyncio.sleep(sleep_time)
-        for symbol in SYMBOLS:
-            run_symbol(symbol)
-            await asyncio.sleep(0.04)
+        tasks = [run_symbol(symbol, semaphore) for symbol in SYMBOLS]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def handle_ping(request):
@@ -303,8 +306,11 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
     asyncio.create_task(bucle_bot())
-    while True:
-        await asyncio.sleep(3600)
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await exchange.close()
 
 
 if __name__ == "__main__":
