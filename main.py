@@ -39,6 +39,10 @@ FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
 POST_CLOSE_DELAY = 8     # segundos de margen tras el cierre de vela antes de pedir datos
 MAX_CONCURRENT_FETCHES = 15   # peticiones simultáneas a Binance (evita rate-limit)
 
+# Emoji de dirección: se usa en todas las alertas de Telegram para ver de un vistazo
+# si la operación es LONG (verde) o SHORT (roja).
+DIR_EMOJI = {"long": "🟢", "short": "🔴"}
+
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
     "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT",
@@ -179,8 +183,9 @@ def process_bar(symbol, i, df, st, alert_enabled):
                 st["sweep_time"] = bar_time
                 st["state"] = "fvg"
                 if alert_enabled:
+                    emoji = DIR_EMOJI[st["dir"]]
                     send_telegram(
-                        f"🧲 *Barrido de liquidez*\n"
+                        f"🧲 *Barrido de liquidez* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"Precio: `{close:.6f}`\n"
@@ -220,8 +225,9 @@ def process_bar(symbol, i, df, st, alert_enabled):
                 st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 if alert_enabled:
+                    emoji = DIR_EMOJI[st["dir"]]
                     send_telegram(
-                        f"📌 *Señal de entrada — FVG formado*\n"
+                        f"📌 *Señal de entrada — FVG formado* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
