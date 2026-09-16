@@ -28,8 +28,8 @@ MIN_GAP_ATR = 0.40     # "Tamaño mínimo del hueco (x ATR)"
 MAX_BAND_ATR = 3.0     # "Banda máx. de validez (x ATR)"
 MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 
-TP_PCT = 4.0
-SL_PCT = 3.0
+TP_PCT = 1.0
+SL_PCT = 5.0
 
 BODY_MIN_RATIO = 0.30   # la vela de barrido debe tener cuerpo >= 30% de su rango total
 
@@ -43,30 +43,72 @@ MAX_CONCURRENT_FETCHES = 15   # peticiones simultáneas a Binance (evita rate-li
 # si la operación es LONG (verde) o SHORT (roja).
 DIR_EMOJI = {"long": "🟢", "short": "🔴"}
 
+# ==========================================
+# VOLATILIDAD DE LA MONEDA
+# ==========================================
+# Tamaño medio de las velas (rango high-low como % del precio) en una ventana
+# reciente, clasificado en los 4 niveles observados en el backtest:
+# Estable (<0.5%), Normal (0.5-1%), Fuerte (1-2%), Extrema (>=2%).
+VOLATILITY_LENGTH = 20
+
+
+def classify_volatility(pct):
+    if pct < 0.5:
+        return "Estable"
+    elif pct < 1.0:
+        return "Normal"
+    elif pct < 2.0:
+        return "Fuerte"
+    else:
+        return "Extrema"
+
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
-    "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT",
-    "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT",
-    "FIL/USDT", "XMR/USDT", "TIA/USDT", "ATOM/USDT", "STX/USDT", "INJ/USDT", "WIF/USDT", "OP/USDT",
-    "ARB/USDT", "THETA/USDT", "GRT/USDT", "RUNE/USDT", "FTM/USDT", "SEI/USDT", "FLOKI/USDT", "BONK/USDT",
-    "JUP/USDT", "AAVE/USDT", "MKR/USDT", "ORDI/USDT", "EGLD/USDT", "SAND/USDT", "EOS/USDT", "MANA/USDT",
-    "XTZ/USDT", "ALGO/USDT", "FLOW/USDT", "AXS/USDT", "GALA/USDT", "SNX/USDT", "NEO/USDT", "KAVA/USDT",
-    "ROSE/USDT", "CHZ/USDT", "IOTA/USDT", "MINA/USDT", "COMP/USDT", "CRV/USDT", "ZEC/USDT", "KSM/USDT",
-    "DASH/USDT", "1INCH/USDT", "ENJ/USDT", "BAT/USDT", "WOO/USDT", "GMT/USDT", "LRC/USDT", "DYDX/USDT",
-    "CFX/USDT", "CKB/USDT", "AR/USDT", "BLUR/USDT", "ARKM/USDT", "STRK/USDT", "ENA/USDT", "TNSR/USDT",
-    "W/USDT", "OM/USDT", "BOME/USDT", "NOT/USDT", "IO/USDT", "ZK/USDT", "ZRO/USDT", "TURBO/USDT",
-    "LISTA/USDT", "DOGS/USDT", "CATI/USDT", "HMSTR/USDT", "EIGEN/USDT", "NEIRO/USDT", "MEW/USDT",
-    "MEME/USDT", "BEAM/USDT", "RONIN/USDT", "PIXEL/USDT", "ALT/USDT", "MANTA/USDT", "XAI/USDT",
-    "ACE/USDT", "NFP/USDT", "AI/USDT", "PORTAL/USDT", "AEVO/USDT", "ETHFI/USDT", "SAGA/USDT", "OMNI/USDT",
-    "REZ/USDT", "BB/USDT", "BANANA/USDT", "SYN/USDT", "PENDLE/USDT", "CELO/USDT", "ONE/USDT", "HOT/USDT",
-    "ZIL/USDT", "RVN/USDT", "ANKR/USDT", "AUDIO/USDT", "LDO/USDT", "STORJ/USDT", "SKL/USDT", "ICX/USDT",
-    "ZRX/USDT", "ONT/USDT", "WAXP/USDT", "SPELL/USDT", "SLP/USDT", "ALPHA/USDT", "COTI/USDT", "ZEN/USDT",
-    "STRAX/USDT", "SXP/USDT", "C98/USDT", "CHR/USDT", "OXT/USDT", "NMR/USDT", "TRB/USDT", "BAND/USDT",
-    "RLC/USDT", "API3/USDT", "TRU/USDT", "BADGER/USDT", "POND/USDT", "PERP/USDT", "ALICE/USDT", "SUPER/USDT",
-    "UNFI/USDT", "LIT/USDT", "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT",
-    "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT", "BSW/USDT", "CVX/USDT",
-    "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT", "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT",
-    "DENT/USDT", "KEY/USDT", "TWT/USDT", "COS/USDT", "CTXC/USDT", "HBAR/USDT"
+    "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "NEAR/USDT", "SUI/USDT",
+    "PEPE/USDT", "SHIB/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT", "BCH/USDT",
+    "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT", "FIL/USDT", "XMR/USDT",
+    "TIA/USDT", "ATOM/USDT", "STX/USDT", "INJ/USDT", "WIF/USDT", "OP/USDT",
+    "ARB/USDT", "THETA/USDT", "GRT/USDT", "RUNE/USDT", "FTM/USDT", "SEI/USDT",
+    "FLOKI/USDT", "BONK/USDT", "JUP/USDT", "AAVE/USDT", "MKR/USDT", "ORDI/USDT",
+    "EGLD/USDT", "SAND/USDT", "EOS/USDT", "MANA/USDT", "XTZ/USDT", "ALGO/USDT",
+    "FLOW/USDT", "AXS/USDT", "GALA/USDT", "SNX/USDT", "NEO/USDT", "KAVA/USDT",
+    "ROSE/USDT", "CHZ/USDT", "IOTA/USDT", "MINA/USDT", "COMP/USDT", "CRV/USDT",
+    "ZEC/USDT", "KSM/USDT", "DASH/USDT", "1INCH/USDT", "ENJ/USDT", "BAT/USDT",
+    "WOO/USDT", "GMT/USDT", "LRC/USDT", "DYDX/USDT", "CFX/USDT", "CKB/USDT",
+    "AR/USDT", "BLUR/USDT", "ARKM/USDT", "STRK/USDT", "ENA/USDT", "TNSR/USDT",
+    "W/USDT", "OM/USDT", "BOME/USDT", "NOT/USDT", "IO/USDT", "ZK/USDT",
+    "ZRO/USDT", "TURBO/USDT", "LISTA/USDT", "DOGS/USDT", "CATI/USDT", "HMSTR/USDT",
+    "EIGEN/USDT", "NEIRO/USDT", "MEW/USDT", "MEME/USDT", "BEAM/USDT", "RONIN/USDT",
+    "PIXEL/USDT", "ALT/USDT", "MANTA/USDT", "XAI/USDT", "ACE/USDT", "NFP/USDT",
+    "AI/USDT", "PORTAL/USDT", "AEVO/USDT", "ETHFI/USDT", "SAGA/USDT", "OMNI/USDT",
+    "REZ/USDT", "BB/USDT", "BANANA/USDT", "SYN/USDT", "PENDLE/USDT", "CELO/USDT",
+    "ONE/USDT", "HOT/USDT", "ZIL/USDT", "RVN/USDT", "ANKR/USDT", "AUDIO/USDT",
+    "LDO/USDT", "STORJ/USDT", "SKL/USDT", "ICX/USDT", "ZRX/USDT", "ONT/USDT",
+    "WAXP/USDT", "SPELL/USDT", "SLP/USDT", "ALPHA/USDT", "COTI/USDT", "ZEN/USDT",
+    "STRAX/USDT", "SXP/USDT", "C98/USDT", "CHR/USDT", "OXT/USDT", "NMR/USDT",
+    "TRB/USDT", "BAND/USDT", "RLC/USDT", "API3/USDT", "TRU/USDT", "BADGER/USDT",
+    "POND/USDT", "PERP/USDT", "ALICE/USDT", "SUPER/USDT", "UNFI/USDT", "LIT/USDT",
+    "SFP/USDT", "DODO/USDT", "BEL/USDT", "CTSI/USDT", "DAR/USDT", "MOVR/USDT",
+    "SYS/USDT", "PEOPLE/USDT", "ACH/USDT", "AGLD/USDT", "GLMR/USDT", "ASTR/USDT",
+    "BSW/USDT", "CVX/USDT", "FIS/USDT", "STPT/USDT", "RAD/USDT", "T/USDT",
+    "PROS/USDT", "VTHO/USDT", "WRX/USDT", "MBL/USDT", "DENT/USDT", "KEY/USDT",
+    "TWT/USDT", "COS/USDT", "CTXC/USDT", "HBAR/USDT", "0G/USDT", "1000BONK/USDT",
+    "1000PEPE/USDT", "ACU/USDT", "AERO/USDT", "AIA/USDT", "AKE/USDT", "APE/USDT",
+    "ASR/USDT", "ASTER/USDT", "ATH/USDT", "AVNT/USDT", "BANK/USDT", "BEAT/USDT",
+    "BIO/USDT", "BROCCOLIF3B/USDT", "BSV/USDT", "B/USDT", "CAKE/USDT", "CC/USDT",
+    "CELR/USDT", "CHIP/USDT", "COAI/USDT", "DEXE/USDT", "DIA/USDT", "ELSA/USDT",
+    "ENS/USDT", "FARTCOIN/USDT", "FF/USDT", "FIGHT/USDT", "FLUX/USDT", "FOGO/USDT",
+    "GENIUS/USDT", "GIGGLE/USDT", "GMX/USDT", "GRASS/USDT", "GRIFFAIN/USDT", "GUN/USDT",
+    "GWEI/USDT", "H/USDT", "HYPE/USDT", "ICNT/USDT", "ID/USDT", "INX/USDT",
+    "JASMY/USDT", "JOE/USDT", "JTO/USDT", "KAS/USDT", "KAT/USDT", "KITE/USDT",
+    "LAYER/USDT", "MANTRA/USDT", "METIS/USDT", "MET/USDT", "MON/USDT", "MORPHO/USDT",
+    "MUBARAK/USDT", "NIGHT/USDT", "OG/USDT", "ONDO/USDT", "PENGU/USDT", "PLUME/USDT",
+    "POL/USDT", "PUMP/USDT", "QNT/USDT", "Q/USDT", "RAYSOL/USDT", "RIVER/USDT",
+    "SAFE/USDT", "SCRT/USDT", "SHELL/USDT", "SKR/USDT", "SKYAI/USDT", "SKY/USDT",
+    "SOON/USDT", "SPORTFUN/USDT", "SPX/USDT", "SSV/USDT", "SYRUP/USDT", "TAO/USDT",
+    "THE/USDT", "TRIA/USDT", "TRUMP/USDT", "TRX/USDT", "UB/USDT", "VET/USDT",
+    "VIRTUAL/USDT", "WLD/USDT", "WLFI/USDT", "XLM/USDT", "XPL/USDT", "XVG/USDT",
+    "ZAMA/USDT"
 ]))
 
 exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "swap"}})
@@ -86,6 +128,8 @@ def default_state():
         "sig_low": None,
         "sig_time": None,
         "extreme_favor": None,
+        "sig_volatility_pct": None,
+        "sig_volatility_label": None,
         "sweep_time": None,
         "gap_top": None,
         "gap_bottom": None,
@@ -129,6 +173,10 @@ def compute_indicators(df):
     ], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1 / ATR_LENGTH, min_periods=ATR_LENGTH, adjust=False).mean()
 
+    # Volatilidad: tamaño medio de vela (rango high-low) como % del precio de cierre
+    df["candle_range_pct"] = (df["high"] - df["low"]) / df["close"] * 100
+    df["volatility_pct"] = df["candle_range_pct"].rolling(VOLATILITY_LENGTH).mean()
+
     return df
 
 
@@ -138,9 +186,10 @@ def process_bar(symbol, i, df, st, alert_enabled):
     row = df.iloc[i]
     open_, close, high, low = row["open"], row["close"], row["high"], row["low"]
     rsi, upper_bb, lower_bb, atr = row["rsi"], row["upper_bb"], row["lower_bb"], row["atr"]
+    volatility_pct = row["volatility_pct"]
     bar_time = row["time"]
 
-    if pd.isna(rsi) or pd.isna(upper_bb) or pd.isna(lower_bb) or pd.isna(atr):
+    if pd.isna(rsi) or pd.isna(upper_bb) or pd.isna(lower_bb) or pd.isna(atr) or pd.isna(volatility_pct):
         st["last_time"] = bar_time
         return
 
@@ -159,6 +208,8 @@ def process_bar(symbol, i, df, st, alert_enabled):
         st["sig_low"] = low
         st["sig_price"] = close
         st["extreme_favor"] = high if st["dir"] == "long" else low
+        st["sig_volatility_pct"] = volatility_pct
+        st["sig_volatility_label"] = classify_volatility(volatility_pct)
         st["state"] = "sweep"
 
     # --- 2) Esperando barrido de liquidez ---
@@ -189,6 +240,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"Precio: `{close:.6f}`\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
                         f"Buscando FVG..."
                     )
 
@@ -230,6 +282,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"📌 *Señal de entrada — FVG formado* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
