@@ -32,7 +32,7 @@ MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 TP_PCT = 1.0
 SL_PCT = 5.0
 
-BODY_MIN_RATIO = 0.30   # la vela de barrido debe tener cuerpo >= 30% de su rango total
+BODY_MIN_RATIO = 0.50   # la vela de barrido debe tener cuerpo >= 50% de su rango total
 
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
