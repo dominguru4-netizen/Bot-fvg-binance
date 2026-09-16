@@ -10,7 +10,8 @@ import requests
 # CREDENCIALES TELEGRAM
 # ==========================================
 TELEGRAM_TOKEN = "8638598049:AAEcQ2kjt9qM_PywnFTZs-2mY-3O8ahW-B0"
-TELEGRAM_CHAT_ID = "2118999160"
+# Destinos a los que se envían todas las alertas: tu chat personal + el canal.
+TELEGRAM_CHAT_IDS = ["2118999160", "-1003657412134"]
 
 # ==========================================
 # PARÁMETROS (idénticos a los inputs del indicador Pine)
@@ -141,10 +142,11 @@ def default_state():
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-    except Exception as e:
-        print(f"Error Telegram: {e}", flush=True)
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
+        except Exception as e:
+            print(f"Error Telegram ({chat_id}): {e}", flush=True)
 
 
 def compute_indicators(df):
