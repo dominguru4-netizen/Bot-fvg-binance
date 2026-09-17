@@ -145,6 +145,10 @@ def default_state():
     }
 
 
+def fmt_time(bar_time_ms):
+    return datetime.fromtimestamp(bar_time_ms / 1000, tz=timezone.utc).strftime("%H:%M UTC")
+
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     for chat_id in TELEGRAM_CHAT_IDS:
@@ -255,6 +259,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Precio: `{close:.6f}`\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
                         f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | vela barrido: {body_ratio*100:.0f}% cuerpo\n"
+                        f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Vela barrido: {fmt_time(bar_time)}\n"
                         f"Buscando FVG..."
                     )
 
@@ -271,6 +276,15 @@ def process_bar(symbol, i, df, st, alert_enabled):
 
         if favor_atr > MAX_BAND_ATR:
             st["state"] = "idle"   # se fue >3 ATR a favor antes de formar el hueco -> cancelado
+            if alert_enabled:
+                emoji = DIR_EMOJI[st["dir"]]
+                send_telegram(
+                    f"❌ *Señal cancelada — se alejó demasiado* {emoji}\n"
+                    f"Par: `{symbol}`\n"
+                    f"Dirección: *{st['dir'].upper()}*\n"
+                    f"El precio se movió {favor_atr:.2f}x ATR a favor (límite: {MAX_BAND_ATR}x) sin formar un FVG limpio.\n"
+                    f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Barrido: {fmt_time(st['sweep_time'])} | Cancelado en vela: {fmt_time(bar_time)}"
+                )
         elif elapsed > MAX_SWEEP_BARS:
             st["state"] = "idle"
         elif i >= 2 and df["time"].iloc[i - 2] >= st["sweep_time"]:
@@ -299,6 +313,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
                         f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | hueco FVG: {gap_size_atr:.2f}x ATR\n"
+                        f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Barrido: {fmt_time(st['sweep_time'])} | FVG confirmado en vela: {fmt_time(bar_time)}\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
