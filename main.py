@@ -34,6 +34,10 @@ SL_PCT = 5.0
 
 BODY_MIN_RATIO = 0.50   # la vela de barrido debe tener cuerpo >= 50% de su rango total
 
+# La vela que rompe Bandas de Bollinger + RSI debe ser una vela de expansión:
+# su rango real (true range) debe ser al menos esta cantidad de veces el ATR.
+SIGNAL_EXPANSION_ATR = 1.5
+
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
 FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
@@ -199,8 +203,18 @@ def process_bar(symbol, i, df, st, alert_enabled):
     candle_range = high - low
     body_ratio = (body_size / candle_range) if candle_range > 0 else 0.0
 
-    signal_long = close < lower_bb and rsi < RSI_OS
-    signal_short = close > upper_bb and rsi > RSI_OB
+    # Rango real (true range) de esta vela, para exigir que la vela que
+    # rompe las bandas sea una vela de expansión real (>= 1.5x el ATR).
+    prev_close = df["close"].iloc[i - 1] if i > 0 else None
+    true_range = max(
+        candle_range,
+        abs(high - prev_close) if prev_close is not None else 0.0,
+        abs(low - prev_close) if prev_close is not None else 0.0,
+    )
+    is_expansion_candle = true_range >= SIGNAL_EXPANSION_ATR * atr
+
+    signal_long = close < lower_bb and rsi < RSI_OS and is_expansion_candle
+    signal_short = close > upper_bb and rsi > RSI_OB and is_expansion_candle
 
     # --- 1) Nueva señal (solo si no hay operación en curso) ---
     if st["state"] == "idle" and (signal_long or signal_short):
