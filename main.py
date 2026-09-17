@@ -34,9 +34,9 @@ SL_PCT = 5.0
 
 BODY_MIN_RATIO = 0.50   # la vela de barrido debe tener cuerpo >= 50% de su rango total
 
-# La vela que rompe Bandas de Bollinger + RSI debe ser una vela de expansión:
-# su rango real (true range) debe ser al menos esta cantidad de veces el ATR.
-SIGNAL_EXPANSION_ATR = 1.5
+# La vela que rompe Bandas de Bollinger + RSI debe tener un rango mínimo,
+# como % del precio, para considerarse una vela de expansión válida.
+SIGNAL_MIN_RANGE_PCT = 1.5
 
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
@@ -135,6 +135,7 @@ def default_state():
         "extreme_favor": None,
         "sig_volatility_pct": None,
         "sig_volatility_label": None,
+        "sig_range_pct": None,
         "sweep_time": None,
         "gap_top": None,
         "gap_bottom": None,
@@ -203,15 +204,10 @@ def process_bar(symbol, i, df, st, alert_enabled):
     candle_range = high - low
     body_ratio = (body_size / candle_range) if candle_range > 0 else 0.0
 
-    # Rango real (true range) de esta vela, para exigir que la vela que
-    # rompe las bandas sea una vela de expansión real (>= 1.5x el ATR).
-    prev_close = df["close"].iloc[i - 1] if i > 0 else None
-    true_range = max(
-        candle_range,
-        abs(high - prev_close) if prev_close is not None else 0.0,
-        abs(low - prev_close) if prev_close is not None else 0.0,
-    )
-    is_expansion_candle = true_range >= SIGNAL_EXPANSION_ATR * atr
+    # La vela que rompe Bandas de Bollinger + RSI debe tener un tamaño
+    # mínimo (rango como % del precio) para considerarse señal válida.
+    candle_range_pct = row["candle_range_pct"]
+    is_expansion_candle = candle_range_pct >= SIGNAL_MIN_RANGE_PCT
 
     signal_long = close < lower_bb and rsi < RSI_OS and is_expansion_candle
     signal_short = close > upper_bb and rsi > RSI_OB and is_expansion_candle
@@ -226,6 +222,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
         st["extreme_favor"] = high if st["dir"] == "long" else low
         st["sig_volatility_pct"] = volatility_pct
         st["sig_volatility_label"] = classify_volatility(volatility_pct)
+        st["sig_range_pct"] = candle_range_pct
         st["state"] = "sweep"
 
     # --- 2) Esperando barrido de liquidez ---
@@ -257,6 +254,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"Precio: `{close:.6f}`\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
+                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | vela barrido: {body_ratio*100:.0f}% cuerpo\n"
                         f"Buscando FVG..."
                     )
 
@@ -292,6 +290,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                 st["tp_price"] = g_mid * (1 + TP_PCT / 100) if st["dir"] == "long" else g_mid * (1 - TP_PCT / 100)
                 st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
+                gap_size_atr = abs(g_top - g_bot) / atr
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
                     send_telegram(
@@ -299,6 +298,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
+                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | hueco FVG: {gap_size_atr:.2f}x ATR\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
