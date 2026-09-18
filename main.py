@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 import os
+import time
 from aiohttp import web
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -29,14 +30,43 @@ MIN_GAP_ATR = 0.40     # "Tamaño mínimo del hueco (x ATR)"
 MAX_BAND_ATR = 3.0     # "Banda máx. de validez (x ATR)"
 MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 
-TP_PCT = 1.0
-SL_PCT = 5.0
+# --- Take Profit: dinámico por ATR, igual que el SL ---
+# Antes era un 1% fijo (tu regla personal a 10x). Ahora se calcula como
+# TP_ATR_MULT veces el ATR, para poder sacar más recorrido en momentos de
+# volatilidad Fuerte/Extrema en vez de cortar siempre igual. OJO: esto
+# significa que el % de ganancia por operación (y por tanto el % sobre tu
+# margen a 10x) ya NO será siempre el mismo — variará según la volatilidad
+# del momento, en vez de ser un 10% de margen fijo como con el 1% fijo.
+TP_MODE = "atr"        # "atr" = dinámico (recomendado) | "fixed" = % fijo (comportamiento anterior)
+TP_ATR_MULT = 1.0      # con SL_ATR_MULT=2.0 esto da una relación 1:2 recompensa:riesgo
+TP_PCT = 1.0           # solo se usa si TP_MODE = "fixed"
+
+# --- Stop Loss: dinámico por ATR en vez de % fijo ---
+# El SL se calcula como SL_ATR_MULT veces el ATR del momento, en vez de un
+# % fijo del precio. Así se adapta al "ruido" normal de cada moneda: una
+# moneda tranquila tendrá un SL más ajustado en precio, una muy volátil
+# uno más ancho, en vez del mismo 5% para todas.
+SL_MODE = "atr"        # "atr" = dinámico (recomendado) | "fixed" = % fijo (comportamiento anterior)
+SL_ATR_MULT = 2.0      # punto de partida razonable; ajustar con el backtest
+SL_PCT = 5.0           # solo se usa si SL_MODE = "fixed"
 
 BODY_MIN_RATIO = 0.50   # la vela de barrido debe tener cuerpo >= 50% de su rango total
 
 # La vela que rompe Bandas de Bollinger + RSI debe tener un rango mínimo,
 # como % del precio, para considerarse una vela de expansión válida.
 SIGNAL_MIN_RANGE_PCT = 1.5
+
+# --- Filtro de tendencia de BTC (4h) ---
+# Solo se toman largos si BTC está en tendencia alcista, y cortos si está
+# en tendencia bajista, para evitar ir contra la marea general del mercado.
+BTC_TREND_ENABLED = True
+BTC_TREND_SYMBOL = "BTC/USDT"
+BTC_TREND_TIMEFRAME = "4h"
+BTC_TREND_EMA_LENGTH = 50
+BTC_TREND_REFRESH_SECONDS = 900   # cada 15 min es de sobra para un indicador de 4h
+
+# Estado global de la tendencia de BTC, se actualiza en segundo plano.
+btc_trend_state = {"trend": None, "last_update": 0}
 
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
@@ -149,6 +179,30 @@ def fmt_time(bar_time_ms):
     return datetime.fromtimestamp(bar_time_ms / 1000, tz=timezone.utc).strftime("%H:%M UTC")
 
 
+async def update_btc_trend():
+    """Descarga velas de BTC en 4h y actualiza btc_trend_state con
+    'alcista' o 'bajista' según el cierre esté por encima o por debajo
+    de su EMA de BTC_TREND_EMA_LENGTH periodos."""
+    if not BTC_TREND_ENABLED:
+        return
+    now = time.time()
+    if now - btc_trend_state["last_update"] < BTC_TREND_REFRESH_SECONDS:
+        return
+    try:
+        bars = await exchange.fetch_ohlcv(
+            BTC_TREND_SYMBOL, timeframe=BTC_TREND_TIMEFRAME, limit=BTC_TREND_EMA_LENGTH + 10
+        )
+        if not bars or len(bars) < BTC_TREND_EMA_LENGTH + 1:
+            return
+        closes = pd.Series([b[4] for b in bars])
+        ema = closes.ewm(span=BTC_TREND_EMA_LENGTH, adjust=False).mean()
+        trend = "alcista" if closes.iloc[-1] > ema.iloc[-1] else "bajista"
+        btc_trend_state["trend"] = trend
+        btc_trend_state["last_update"] = now
+    except Exception as e:
+        print(f"Error actualizando tendencia BTC: {e}", flush=True)
+
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     for chat_id in TELEGRAM_CHAT_IDS:
@@ -213,6 +267,9 @@ def process_bar(symbol, i, df, st, alert_enabled):
     candle_range_pct = row["candle_range_pct"]
     is_expansion_candle = candle_range_pct >= SIGNAL_MIN_RANGE_PCT
 
+    # La tendencia de BTC se calcula y se muestra en las alertas, pero NO
+    # bloquea ninguna señal: se mandan tanto longs como shorts sin importar
+    # hacia dónde vaya BTC.
     signal_long = close < lower_bb and rsi < RSI_OS and is_expansion_candle
     signal_short = close > upper_bb and rsi > RSI_OB and is_expansion_candle
 
@@ -259,7 +316,6 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Precio: `{close:.6f}`\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
                         f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | vela barrido: {body_ratio*100:.0f}% cuerpo\n"
-                        f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Vela barrido: {fmt_time(bar_time)}\n"
                         f"Buscando FVG..."
                     )
 
@@ -274,7 +330,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
 
         elapsed = round((bar_time - st["sweep_time"]) / BAR_MS)
 
-        if favor_atr > MAX_BAND_ATR:
+        if MAX_BAND_ATR is not None and favor_atr > MAX_BAND_ATR:
             st["state"] = "idle"   # se fue >3 ATR a favor antes de formar el hueco -> cancelado
             if alert_enabled:
                 emoji = DIR_EMOJI[st["dir"]]
@@ -282,8 +338,7 @@ def process_bar(symbol, i, df, st, alert_enabled):
                     f"❌ *Señal cancelada — se alejó demasiado* {emoji}\n"
                     f"Par: `{symbol}`\n"
                     f"Dirección: *{st['dir'].upper()}*\n"
-                    f"El precio se movió {favor_atr:.2f}x ATR a favor (límite: {MAX_BAND_ATR}x) sin formar un FVG limpio.\n"
-                    f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Barrido: {fmt_time(st['sweep_time'])} | Cancelado en vela: {fmt_time(bar_time)}"
+                    f"El precio se movió {favor_atr:.2f}x ATR a favor (límite: {MAX_BAND_ATR}x) sin formar un FVG limpio."
                 )
         elif elapsed > MAX_SWEEP_BARS:
             st["state"] = "idle"
@@ -301,8 +356,16 @@ def process_bar(symbol, i, df, st, alert_enabled):
                 st["gap_top"] = g_top
                 st["gap_bottom"] = g_bot
                 st["entry_price"] = g_mid
-                st["tp_price"] = g_mid * (1 + TP_PCT / 100) if st["dir"] == "long" else g_mid * (1 - TP_PCT / 100)
-                st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
+                if TP_MODE == "atr":
+                    tp_distance = TP_ATR_MULT * atr
+                    st["tp_price"] = g_mid + tp_distance if st["dir"] == "long" else g_mid - tp_distance
+                else:
+                    st["tp_price"] = g_mid * (1 + TP_PCT / 100) if st["dir"] == "long" else g_mid * (1 - TP_PCT / 100)
+                if SL_MODE == "atr":
+                    sl_distance = SL_ATR_MULT * atr
+                    st["sl_price"] = g_mid - sl_distance if st["dir"] == "long" else g_mid + sl_distance
+                else:
+                    st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 gap_size_atr = abs(g_top - g_bot) / atr
                 if alert_enabled:
@@ -312,8 +375,8 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
+                        f"₿ Tendencia BTC 4h: *{btc_trend_state['trend'] or 'sin datos'}*\n"
                         f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | hueco FVG: {gap_size_atr:.2f}x ATR\n"
-                        f"🕒 Vela señal: {fmt_time(st['sig_time'])} | Barrido: {fmt_time(st['sweep_time'])} | FVG confirmado en vela: {fmt_time(bar_time)}\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
@@ -381,6 +444,7 @@ async def bucle_bot():
         if sleep_time < 5:
             sleep_time += 180
         await asyncio.sleep(sleep_time)
+        await update_btc_trend()
         tasks = [run_symbol(symbol, semaphore) for symbol in SYMBOLS]
         await asyncio.gather(*tasks, return_exceptions=True)
 
