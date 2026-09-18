@@ -61,9 +61,9 @@ SIGNAL_MIN_RANGE_PCT = 1.5
 # en tendencia bajista, para evitar ir contra la marea general del mercado.
 BTC_TREND_ENABLED = True
 BTC_TREND_SYMBOL = "BTC/USDT"
-BTC_TREND_TIMEFRAME = "4h"
-BTC_TREND_EMA_LENGTH = 50
-BTC_TREND_REFRESH_SECONDS = 900   # cada 15 min es de sobra para un indicador de 4h
+BTC_TREND_TIMEFRAME = "3m"
+BTC_TREND_EMA_LENGTH = 200
+BTC_TREND_REFRESH_SECONDS = 150   # se actualiza prácticamente en cada ciclo de 3m
 
 # Estado global de la tendencia de BTC, se actualiza en segundo plano.
 btc_trend_state = {"trend": None, "last_update": 0}
@@ -166,6 +166,9 @@ def default_state():
         "sig_volatility_pct": None,
         "sig_volatility_label": None,
         "sig_range_pct": None,
+        "pending_extreme": None,
+        "pullback_count": 0,
+        "retroceso_confirmed": False,
         "sweep_time": None,
         "gap_top": None,
         "gap_bottom": None,
@@ -281,29 +284,55 @@ def process_bar(symbol, i, df, st, alert_enabled):
         st["sig_low"] = low
         st["sig_price"] = close
         st["extreme_favor"] = high if st["dir"] == "long" else low
+        st["pending_extreme"] = low if st["dir"] == "long" else high
+        st["pullback_count"] = 0
+        st["retroceso_confirmed"] = False
         st["sig_volatility_pct"] = volatility_pct
         st["sig_volatility_label"] = classify_volatility(volatility_pct)
         st["sig_range_pct"] = candle_range_pct
         st["state"] = "sweep"
 
-    # --- 2) Esperando barrido de liquidez ---
+    # --- 2) Esperando barrido de liquidez (con retroceso previo confirmado) ---
     if st["state"] == "sweep":
         elapsed = round((bar_time - st["sig_time"]) / BAR_MS)
         if elapsed > MAX_SWEEP_BARS:
             st["state"] = "idle"
         else:
             if st["dir"] == "long":
-                sweep_cond = (
-                    close < st["sig_low"]        # cierra por debajo del extremo de la señal
-                    and close < open_             # vela bajista (cuerpo a favor del barrido)
-                    and body_ratio >= BODY_MIN_RATIO   # con cuerpo real, no doji
-                )
+                if not st["retroceso_confirmed"]:
+                    # Empuje inicial hacia abajo: el "mínimo" a re-romper solo se
+                    # actualiza mientras seguimos esperando el retroceso.
+                    st["pending_extreme"] = min(st["pending_extreme"], low)
+                    if close > open_:   # vela alcista = posible retroceso
+                        st["pullback_count"] += 1
+                        if st["pullback_count"] >= 2:
+                            st["retroceso_confirmed"] = True
+                    else:
+                        st["pullback_count"] = 0
+                    sweep_cond = False
+                else:
+                    # El mínimo queda congelado desde que se confirmó el retroceso.
+                    sweep_cond = (
+                        close < st["pending_extreme"]   # vuelve a romper el mínimo tras el retroceso
+                        and close < open_
+                        and body_ratio >= BODY_MIN_RATIO
+                    )
             else:
-                sweep_cond = (
-                    close > st["sig_high"]
-                    and close > open_             # vela alcista
-                    and body_ratio >= BODY_MIN_RATIO
-                )
+                if not st["retroceso_confirmed"]:
+                    st["pending_extreme"] = max(st["pending_extreme"], high)
+                    if close < open_:   # vela bajista = posible retroceso
+                        st["pullback_count"] += 1
+                        if st["pullback_count"] >= 2:
+                            st["retroceso_confirmed"] = True
+                    else:
+                        st["pullback_count"] = 0
+                    sweep_cond = False
+                else:
+                    sweep_cond = (
+                        close > st["pending_extreme"]   # vuelve a romper el máximo tras el retroceso
+                        and close > open_
+                        and body_ratio >= BODY_MIN_RATIO
+                    )
             if sweep_cond:
                 st["sweep_time"] = bar_time
                 st["state"] = "fvg"
