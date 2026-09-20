@@ -27,7 +27,7 @@ MAX_SWEEP_BARS = 480   # "Máx. velas para el barrido" (24h en TF 3m)
 
 ATR_LENGTH = 14
 MIN_GAP_ATR = 0.40     # "Tamaño mínimo del hueco (x ATR)"
-MAX_BAND_ATR = 3.0     # "Banda máx. de validez (x ATR)"
+MAX_BAND_ATR = 5.0     # "Banda máx. de validez (x ATR)"
 MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 
 # --- Take Profit: dinámico por ATR, igual que el SL ---
@@ -37,7 +37,7 @@ MAX_WAIT_FVG = 960     # "Máx. velas esperando FVG / llenado"
 # significa que el % de ganancia por operación (y por tanto el % sobre tu
 # margen a 10x) ya NO será siempre el mismo — variará según la volatilidad
 # del momento, en vez de ser un 10% de margen fijo como con el 1% fijo.
-TP_MODE = "atr"        # "atr" = dinámico (recomendado) | "fixed" = % fijo (comportamiento anterior)
+TP_MODE = "fixed"      # "atr" = dinámico | "fixed" = % fijo
 TP_ATR_MULT = 1.0      # con SL_ATR_MULT=2.0 esto da una relación 1:2 recompensa:riesgo
 TP_PCT = 1.0           # solo se usa si TP_MODE = "fixed"
 
@@ -46,7 +46,7 @@ TP_PCT = 1.0           # solo se usa si TP_MODE = "fixed"
 # % fijo del precio. Así se adapta al "ruido" normal de cada moneda: una
 # moneda tranquila tendrá un SL más ajustado en precio, una muy volátil
 # uno más ancho, en vez del mismo 5% para todas.
-SL_MODE = "atr"        # "atr" = dinámico (recomendado) | "fixed" = % fijo (comportamiento anterior)
+SL_MODE = "fixed"      # "atr" = dinámico | "fixed" = % fijo
 SL_ATR_MULT = 2.0      # punto de partida razonable; ajustar con el backtest
 SL_PCT = 5.0           # solo se usa si SL_MODE = "fixed"
 
