@@ -63,14 +63,22 @@ BTC_TREND_ENABLED = True
 BTC_TREND_SYMBOL = "BTC/USDT"
 BTC_TREND_TIMEFRAME = "3m"
 BTC_TREND_EMA_LENGTH = 200
-BTC_TREND_REFRESH_SECONDS = 150   # se actualiza prácticamente en cada ciclo de 3m
+BTC_TREND_REFRESH_SECONDS = 1800   # cada 30 min es de sobra para un dato informativo
 
 # Estado global de la tendencia de BTC, se actualiza en segundo plano.
 btc_trend_state = {"trend": None, "last_update": 0}
 
+FUNDING_REFRESH_SECONDS = 1800   # cada 30 min, no hace falta más seguido
+funding_rates_last_update = 0
+
+# Caché del funding rate de todos los pares, actualizada una vez por ciclo
+# con UNA sola petición a Binance (ver update_funding_rates_cache).
+funding_rates_cache = {}
+
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
-FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
+FETCH_LIMIT = 1000       # velas de histórico SOLO la primera vez (por símbolo)
+FETCH_LIMIT_REFRESH = 50 # velas a pedir en cada ciclo normal, mucho más barato
 POST_CLOSE_DELAY = 8     # segundos de margen tras el cierre de vela antes de pedir datos
 MAX_CONCURRENT_FETCHES = 15   # peticiones simultáneas a Binance (evita rate-limit)
 
@@ -96,6 +104,54 @@ def classify_volatility(pct):
         return "Fuerte"
     else:
         return "Extrema"
+
+
+def classify_sweep_strength(body_ratio, wick_ratio, vol_ratio):
+    """Puntúa la 'fuerza' del propio barrido: cuerpo dominante, mecha de
+    rechazo clara, y pico de volumen. Umbrales de partida, ajustables."""
+    score = 0
+    if body_ratio >= 0.70:
+        score += 1
+    if wick_ratio >= 0.40:
+        score += 1
+    if vol_ratio is not None and vol_ratio >= 1.5:
+        score += 1
+    if score >= 3:
+        return "🟢 Fuerte"
+    elif score >= 1:
+        return "🟡 Media"
+    else:
+        return "🔴 Débil"
+
+
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate):
+    """Puntúa la calidad global de la entrada combinando volatilidad,
+    tamaño del hueco, alineación con la tendencia de BTC y funding rate
+    extremo a favor. Umbrales de partida, ajustables con el backtest."""
+    score = 0
+    if volatility_label in ("Fuerte", "Extrema"):
+        score += 1
+    if 0.3 <= gap_size_atr <= 2.0:
+        score += 1
+    if btc_trend == "alcista" and direction == "long":
+        score += 1
+    elif btc_trend == "bajista" and direction == "short":
+        score += 1
+    elif btc_trend == "alcista" and direction == "short":
+        score -= 1
+    elif btc_trend == "bajista" and direction == "long":
+        score -= 1
+    if funding_rate is not None:
+        if direction == "short" and funding_rate >= 0.0003:
+            score += 1
+        elif direction == "long" and funding_rate <= -0.0003:
+            score += 1
+    if score >= 3:
+        return "🟢 PERFECTA"
+    elif score >= 1:
+        return "🟡 MEDIA"
+    else:
+        return "🔴 DÉBIL"
 
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
@@ -162,11 +218,16 @@ def default_state():
         "sig_high": None,
         "sig_low": None,
         "sig_time": None,
-        "extreme_favor": None,
+        "extreme_adverse": None,
         "sig_volatility_pct": None,
         "sig_volatility_label": None,
         "sig_range_pct": None,
         "pending_extreme": None,
+        "barrido_price": None,
+        "barrido_vol_ratio": None,
+        "barrido_wick_ratio": None,
+        "barrido_funding_rate": None,
+        "barrido_strength": None,
         "pullback_count": 0,
         "retroceso_confirmed": False,
         "sweep_time": None,
@@ -245,10 +306,13 @@ def compute_indicators(df):
     df["candle_range_pct"] = (df["high"] - df["low"]) / df["close"] * 100
     df["volatility_pct"] = df["candle_range_pct"].rolling(VOLATILITY_LENGTH).mean()
 
+    # Volumen medio reciente, para detectar picos de volumen en el barrido
+    df["vol_avg"] = df["volume"].rolling(VOLATILITY_LENGTH).mean()
+
     return df
 
 
-def process_bar(symbol, i, df, st, alert_enabled):
+def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
     """Procesa UNA vela replicando exactamente los bloques del script Pine,
     en el mismo orden (no son excluyentes entre sí, igual que en Pine)."""
     row = df.iloc[i]
@@ -283,7 +347,6 @@ def process_bar(symbol, i, df, st, alert_enabled):
         st["sig_high"] = high
         st["sig_low"] = low
         st["sig_price"] = close
-        st["extreme_favor"] = high if st["dir"] == "long" else low
         st["pending_extreme"] = low if st["dir"] == "long" else high
         st["pullback_count"] = 0
         st["retroceso_confirmed"] = False
@@ -336,6 +399,30 @@ def process_bar(symbol, i, df, st, alert_enabled):
             if sweep_cond:
                 st["sweep_time"] = bar_time
                 st["state"] = "fvg"
+                # Referencia para MAX_BAND_ATR: el precio del propio barrido, y el
+                # extremo en la dirección CONTRARIA a la buscada (adversa). Un
+                # movimiento a favor, por grande que sea, nunca cancela la señal —
+                # solo cancela si el precio invalida el barrido moviéndose en contra.
+                st["barrido_price"] = close
+                st["extreme_adverse"] = low if st["dir"] == "long" else high
+
+                # Volumen: ¿esta vela tuvo un pico respecto a lo normal reciente?
+                vol_avg = row["vol_avg"]
+                vol_ratio = (row["volume"] / vol_avg) if vol_avg and vol_avg > 0 else None
+
+                # Mecha de rechazo: para short, mecha superior (rechazo arriba);
+                # para long, mecha inferior (rechazo abajo). Como % del rango total.
+                if st["dir"] == "short":
+                    wick_ratio = ((high - max(open_, close)) / candle_range) if candle_range > 0 else 0.0
+                else:
+                    wick_ratio = ((min(open_, close) - low) / candle_range) if candle_range > 0 else 0.0
+
+                st["barrido_vol_ratio"] = vol_ratio
+                st["barrido_wick_ratio"] = wick_ratio
+                st["barrido_funding_rate"] = funding_rate
+
+                st["barrido_strength"] = classify_sweep_strength(body_ratio, wick_ratio, vol_ratio)
+
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
                     send_telegram(
@@ -343,34 +430,44 @@ def process_bar(symbol, i, df, st, alert_enabled):
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"Precio: `{close:.6f}`\n"
-                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
-                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | vela barrido: {body_ratio*100:.0f}% cuerpo\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}*\n"
+                        f"💪 Fuerza del barrido: *{st['barrido_strength']}*\n"
                         f"Buscando FVG..."
                     )
 
     # --- 3) Esperando el primer FVG válido a favor ---
     if st["state"] == "fvg":
         if st["dir"] == "long":
-            st["extreme_favor"] = max(st["extreme_favor"], high)
-            favor_atr = (st["extreme_favor"] - st["sig_price"]) / atr
+            # Adversa para un long = hacia abajo (invalida el barrido si sigue cayendo)
+            st["extreme_adverse"] = min(st["extreme_adverse"], low)
+            adverse_atr = (st["barrido_price"] - st["extreme_adverse"]) / atr
         else:
-            st["extreme_favor"] = min(st["extreme_favor"], low)
-            favor_atr = (st["sig_price"] - st["extreme_favor"]) / atr
+            # Adversa para un short = hacia arriba
+            st["extreme_adverse"] = max(st["extreme_adverse"], high)
+            adverse_atr = (st["extreme_adverse"] - st["barrido_price"]) / atr
 
         elapsed = round((bar_time - st["sweep_time"]) / BAR_MS)
 
-        if MAX_BAND_ATR is not None and favor_atr > MAX_BAND_ATR:
-            st["state"] = "idle"   # se fue >3 ATR a favor antes de formar el hueco -> cancelado
+        if MAX_BAND_ATR is not None and adverse_atr > MAX_BAND_ATR:
+            st["state"] = "idle"   # se movió >MAX_BAND_ATR en CONTRA del barrido -> cancelado
             if alert_enabled:
                 emoji = DIR_EMOJI[st["dir"]]
                 send_telegram(
-                    f"❌ *Señal cancelada — se alejó demasiado* {emoji}\n"
+                    f"❌ *Señal cancelada — se movió en contra del barrido* {emoji}\n"
                     f"Par: `{symbol}`\n"
                     f"Dirección: *{st['dir'].upper()}*\n"
-                    f"El precio se movió {favor_atr:.2f}x ATR a favor (límite: {MAX_BAND_ATR}x) sin formar un FVG limpio."
+                    f"El precio se movió {adverse_atr:.2f}x ATR en contra del barrido (límite: {MAX_BAND_ATR}x), invalidando la señal."
                 )
         elif elapsed > MAX_SWEEP_BARS:
-            st["state"] = "idle"
+            st["state"] = "idle"   # se agotó el tiempo esperando un FVG limpio -> cancelado
+            if alert_enabled:
+                emoji = DIR_EMOJI[st["dir"]]
+                send_telegram(
+                    f"❌ *Señal cancelada — no formó FVG a tiempo* {emoji}\n"
+                    f"Par: `{symbol}`\n"
+                    f"Dirección: *{st['dir'].upper()}*\n"
+                    f"Pasaron {elapsed} velas desde el barrido sin formarse un hueco limpio (límite: {MAX_SWEEP_BARS})."
+                )
         elif i >= 2 and df["time"].iloc[i - 2] >= st["sweep_time"]:
             high2 = df["high"].iloc[i - 2]
             low2 = df["low"].iloc[i - 2]
@@ -397,15 +494,18 @@ def process_bar(symbol, i, df, st, alert_enabled):
                     st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 gap_size_atr = abs(g_top - g_bot) / atr
+                entry_quality = classify_entry_quality(
+                    st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
+                    st["dir"], st["barrido_funding_rate"]
+                )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
                     send_telegram(
                         f"📌 *Señal de entrada — FVG formado* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
-                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
-                        f"₿ Tendencia BTC 4h: *{btc_trend_state['trend'] or 'sin datos'}*\n"
-                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | hueco FVG: {gap_size_atr:.2f}x ATR\n"
+                        f"⭐ Calidad de la señal: *{entry_quality}*\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
@@ -434,23 +534,57 @@ def process_bar(symbol, i, df, st, alert_enabled):
     st["last_time"] = bar_time
 
 
+async def update_funding_rates_cache():
+    """Pide el funding rate de TODOS los pares en una sola petición a Binance
+    (en vez de una petición por moneda). Se actualiza solo cada
+    FUNDING_REFRESH_SECONDS, no en cada ciclo de 3 minutos."""
+    global funding_rates_last_update
+    now = time.time()
+    if now - funding_rates_last_update < FUNDING_REFRESH_SECONDS:
+        return
+    try:
+        rates = await exchange.fetch_funding_rates()
+        for symbol, data in rates.items():
+            funding_rates_cache[symbol] = data.get("fundingRate")
+        funding_rates_last_update = now
+    except Exception as e:
+        print(f"Error actualizando funding rates: {e}", flush=True)
+
+
 async def run_symbol(symbol, semaphore):
     async with semaphore:
         try:
-            bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
+            st = symbol_state.setdefault(symbol, default_state())
+
+            # Solo pedimos el historial completo (1000 velas, mucho "peso" ante
+            # Binance) la PRIMERA vez que vemos este símbolo. En los ciclos
+            # siguientes basta con unas pocas velas recientes — esto reduce
+            # drásticamente el número de peticiones "pesadas" por ciclo.
+            limit = FETCH_LIMIT if not st["initialized"] else FETCH_LIMIT_REFRESH
+            bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=limit)
             if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
                 return
+
+            # Si tras una parada larga hay un hueco mayor de lo que trae este
+            # fetch pequeño, no hay datos suficientes para reconstruir bien
+            # el estado -> se repite la petición pidiendo el historial completo.
+            if st["initialized"] and st["last_time"] is not None and bars[0][0] > st["last_time"] + BAR_MS:
+                bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
+                if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
+                    return
+
+            # ccxt a veces devuelve las claves de futuros como "BTC/USDT:USDT"
+            # en vez de "BTC/USDT" — se prueban las dos formas por seguridad.
+            funding_rate = funding_rates_cache.get(symbol) or funding_rates_cache.get(f"{symbol}:USDT")
             # Se descarta la última vela porque aún está en formación (no cerrada)
             df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
             df = compute_indicators(df)
-
-            st = symbol_state.setdefault(symbol, default_state())
 
             if not st["initialized"]:
                 # Primera vez que vemos este símbolo: reconstruimos en qué estado
                 # está AHORA MISMO sin mandar alertas de todo el histórico.
                 for i in range(len(df)):
-                    process_bar(symbol, i, df, st, alert_enabled=False)
+                    process_bar(symbol, i, df, st, alert_enabled=False, funding_rate=funding_rate)
                 st["initialized"] = True
             else:
                 new_rows = df[df["time"] > st["last_time"]]
@@ -458,7 +592,7 @@ async def run_symbol(symbol, semaphore):
                     return
                 start_idx = new_rows.index[0]
                 for i in range(start_idx, len(df)):
-                    process_bar(symbol, i, df, st, alert_enabled=True)
+                    process_bar(symbol, i, df, st, alert_enabled=True, funding_rate=funding_rate)
 
         except Exception as e:
             print(f"Error en {symbol}: {e}", flush=True)
@@ -474,6 +608,7 @@ async def bucle_bot():
             sleep_time += 180
         await asyncio.sleep(sleep_time)
         await update_btc_trend()
+        await update_funding_rates_cache()
         tasks = [run_symbol(symbol, semaphore) for symbol in SYMBOLS]
         await asyncio.gather(*tasks, return_exceptions=True)
 
