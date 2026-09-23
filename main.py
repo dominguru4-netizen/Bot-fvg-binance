@@ -68,6 +68,10 @@ BTC_TREND_REFRESH_SECONDS = 150   # se actualiza prácticamente en cada ciclo de
 # Estado global de la tendencia de BTC, se actualiza en segundo plano.
 btc_trend_state = {"trend": None, "last_update": 0}
 
+# Caché del funding rate de todos los pares, actualizada una vez por ciclo
+# con UNA sola petición a Binance (ver update_funding_rates_cache).
+funding_rates_cache = {}
+
 TIMEFRAME = "3m"
 BAR_MS = 3 * 60 * 1000   # duración de una vela de 3m en milisegundos
 FETCH_LIMIT = 1000       # velas de histórico a pedir cada ciclo
@@ -96,6 +100,54 @@ def classify_volatility(pct):
         return "Fuerte"
     else:
         return "Extrema"
+
+
+def classify_sweep_strength(body_ratio, wick_ratio, vol_ratio):
+    """Puntúa la 'fuerza' del propio barrido: cuerpo dominante, mecha de
+    rechazo clara, y pico de volumen. Umbrales de partida, ajustables."""
+    score = 0
+    if body_ratio >= 0.70:
+        score += 1
+    if wick_ratio >= 0.40:
+        score += 1
+    if vol_ratio is not None and vol_ratio >= 1.5:
+        score += 1
+    if score >= 3:
+        return "🟢 Fuerte"
+    elif score >= 1:
+        return "🟡 Media"
+    else:
+        return "🔴 Débil"
+
+
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate):
+    """Puntúa la calidad global de la entrada combinando volatilidad,
+    tamaño del hueco, alineación con la tendencia de BTC y funding rate
+    extremo a favor. Umbrales de partida, ajustables con el backtest."""
+    score = 0
+    if volatility_label in ("Fuerte", "Extrema"):
+        score += 1
+    if 0.3 <= gap_size_atr <= 2.0:
+        score += 1
+    if btc_trend == "alcista" and direction == "long":
+        score += 1
+    elif btc_trend == "bajista" and direction == "short":
+        score += 1
+    elif btc_trend == "alcista" and direction == "short":
+        score -= 1
+    elif btc_trend == "bajista" and direction == "long":
+        score -= 1
+    if funding_rate is not None:
+        if direction == "short" and funding_rate >= 0.0003:
+            score += 1
+        elif direction == "long" and funding_rate <= -0.0003:
+            score += 1
+    if score >= 3:
+        return "🟢 PERFECTA"
+    elif score >= 1:
+        return "🟡 MEDIA"
+    else:
+        return "🔴 DÉBIL"
 
 SYMBOLS = list(set([
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
@@ -171,6 +223,7 @@ def default_state():
         "barrido_vol_ratio": None,
         "barrido_wick_ratio": None,
         "barrido_funding_rate": None,
+        "barrido_strength": None,
         "pullback_count": 0,
         "retroceso_confirmed": False,
         "sweep_time": None,
@@ -364,19 +417,17 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 st["barrido_wick_ratio"] = wick_ratio
                 st["barrido_funding_rate"] = funding_rate
 
+                st["barrido_strength"] = classify_sweep_strength(body_ratio, wick_ratio, vol_ratio)
+
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
-                    vol_txt = f"{vol_ratio:.1f}x" if vol_ratio is not None else "s/d"
-                    funding_txt = f"{funding_rate*100:.3f}%" if funding_rate is not None else "s/d"
                     send_telegram(
                         f"🧲 *Barrido de liquidez* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"Precio: `{close:.6f}`\n"
-                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
-                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | vela barrido: {body_ratio*100:.0f}% cuerpo\n"
-                        f"📶 Volumen: {vol_txt} de lo normal | Mecha de rechazo: {wick_ratio*100:.0f}%\n"
-                        f"💰 Funding rate: {funding_txt}\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}*\n"
+                        f"💪 Fuerza del barrido: *{st['barrido_strength']}*\n"
                         f"Buscando FVG..."
                     )
 
@@ -439,18 +490,18 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                     st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 gap_size_atr = abs(g_top - g_bot) / atr
+                entry_quality = classify_entry_quality(
+                    st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
+                    st["dir"], st["barrido_funding_rate"]
+                )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
-                    vol_txt = f"{st['barrido_vol_ratio']:.1f}x" if st["barrido_vol_ratio"] is not None else "s/d"
-                    funding_txt = f"{st['barrido_funding_rate']*100:.3f}%" if st["barrido_funding_rate"] is not None else "s/d"
                     send_telegram(
                         f"📌 *Señal de entrada — FVG formado* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
-                        f"📊 Volatilidad: *{st['sig_volatility_label']}* ({st['sig_volatility_pct']:.2f}%)\n"
-                        f"₿ Tendencia BTC 4h: *{btc_trend_state['trend'] or 'sin datos'}*\n"
-                        f"🩻 Diagnóstico → vela señal: {st['sig_range_pct']:.2f}% rango | hueco FVG: {gap_size_atr:.2f}x ATR\n"
-                        f"📶 Barrido → volumen: {vol_txt} de lo normal | mecha rechazo: {st['barrido_wick_ratio']*100:.0f}% | funding: {funding_txt}\n"
+                        f"⭐ Calidad de la señal: *{entry_quality}*\n"
+                        f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
@@ -479,30 +530,27 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
     st["last_time"] = bar_time
 
 
-async def fetch_funding_rate_safe(symbol):
-    """Pide el funding rate actual del símbolo. Devuelve None si falla,
-    para que el resto del bot siga funcionando igual sin este dato."""
+async def update_funding_rates_cache():
+    """Pide el funding rate de TODOS los pares en una sola petición a Binance
+    (en vez de una petición por moneda, que fue lo que causó el baneo de IP
+    por exceso de peticiones). Se actualiza una vez por ciclo del bot."""
     try:
-        data = await exchange.fetch_funding_rate(symbol)
-        return data.get("fundingRate")
-    except Exception:
-        return None
+        rates = await exchange.fetch_funding_rates()
+        for symbol, data in rates.items():
+            funding_rates_cache[symbol] = data.get("fundingRate")
+    except Exception as e:
+        print(f"Error actualizando funding rates: {e}", flush=True)
 
 
 async def run_symbol(symbol, semaphore):
     async with semaphore:
         try:
-            # Se piden a la vez las velas y el funding rate (dato adicional
-            # para las alertas). NOTA: esto añade una petición extra a Binance
-            # por símbolo en cada ciclo (~271 peticiones más cada 3 min) —
-            # si en algún momento veis errores de rate-limit en el log de
-            # Render, lo primero a revisar es esto.
-            bars, funding_rate = await asyncio.gather(
-                exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT),
-                fetch_funding_rate_safe(symbol),
-            )
+            bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
             if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
                 return
+            # ccxt a veces devuelve las claves de futuros como "BTC/USDT:USDT"
+            # en vez de "BTC/USDT" — se prueban las dos formas por seguridad.
+            funding_rate = funding_rates_cache.get(symbol) or funding_rates_cache.get(f"{symbol}:USDT")
             # Se descarta la última vela porque aún está en formación (no cerrada)
             df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
             df = compute_indicators(df)
@@ -537,6 +585,7 @@ async def bucle_bot():
             sleep_time += 180
         await asyncio.sleep(sleep_time)
         await update_btc_trend()
+        await update_funding_rates_cache()
         tasks = [run_symbol(symbol, semaphore) for symbol in SYMBOLS]
         await asyncio.gather(*tasks, return_exceptions=True)
 
