@@ -500,12 +500,16 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
+                    funding_ok = "✅" if st["barrido_funding_rate"] is not None else "❌ s/d"
+                    btc_ok = "✅" if btc_trend_state["trend"] is not None else "❌ s/d"
+                    vol_ok = "✅" if st["barrido_vol_ratio"] is not None else "❌ s/d"
                     send_telegram(
                         f"📌 *Señal de entrada — FVG formado* {emoji}\n"
                         f"Par: `{symbol}`\n"
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"⭐ Calidad de la señal: *{entry_quality}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
+                        f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok}\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
