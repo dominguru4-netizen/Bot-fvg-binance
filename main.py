@@ -124,11 +124,15 @@ def classify_sweep_strength(body_ratio, wick_ratio, vol_ratio):
         return "🔴 Débil"
 
 
-def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate):
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False):
     """Puntúa la calidad global de la entrada combinando volatilidad,
-    tamaño del hueco, alineación con la tendencia de BTC y funding rate
-    extremo a favor. Umbrales de partida, ajustables con el backtest."""
+    tamaño del hueco, alineación con la tendencia de BTC, funding rate
+    extremo a favor, y si el RSI ya se está alejando del extremo (señal
+    de que el impulso contrario está perdiendo fuerza). Umbrales de
+    partida, ajustables con el backtest."""
     score = 0
+    if rsi_turning:
+        score += 1
     if volatility_label in ("Fuerte", "Extrema"):
         score += 1
     if 0.3 <= gap_size_atr <= 2.0:
@@ -215,6 +219,7 @@ def default_state():
         "state": "idle",        # idle -> sweep -> fvg -> wait_fill -> filled
         "dir": None,
         "sig_price": None,
+        "sig_rsi": None,
         "sig_high": None,
         "sig_low": None,
         "sig_time": None,
@@ -347,6 +352,7 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
         st["sig_high"] = high
         st["sig_low"] = low
         st["sig_price"] = close
+        st["sig_rsi"] = rsi
         st["pending_extreme"] = low if st["dir"] == "long" else high
         st["pullback_count"] = 0
         st["retroceso_confirmed"] = False
@@ -494,14 +500,21 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                     st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 gap_size_atr = abs(g_top - g_bot) / atr
+                # ¿El RSI ya se alejó al menos 5 puntos del extremo de la señal?
+                # (señal de que el impulso contrario está perdiendo fuerza)
+                rsi_turning = (
+                    (st["dir"] == "short" and rsi < st["sig_rsi"] - 5)
+                    or (st["dir"] == "long" and rsi > st["sig_rsi"] + 5)
+                )
                 entry_quality = classify_entry_quality(
                     st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
-                    st["dir"], st["barrido_funding_rate"]
+                    st["dir"], st["barrido_funding_rate"], rsi_turning
                 )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
                     funding_ok = "✅" if st["barrido_funding_rate"] is not None else "❌ s/d"
                     btc_ok = "✅" if btc_trend_state["trend"] is not None else "❌ s/d"
+                    rsi_ok = "✅" if rsi_turning else "❌"
                     vol_ok = "✅" if st["barrido_vol_ratio"] is not None else "❌ s/d"
                     send_telegram(
                         f"📌 *Señal de entrada — FVG formado* {emoji}\n"
@@ -509,7 +522,7 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"⭐ Calidad de la señal: *{entry_quality}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
-                        f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok}\n"
+                        f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok} | RSI a favor: {rsi_ok}\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
