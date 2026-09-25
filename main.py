@@ -63,6 +63,7 @@ BTC_TREND_ENABLED = True
 BTC_TREND_SYMBOL = "BTC/USDT"
 BTC_TREND_TIMEFRAME = "3m"
 BTC_TREND_EMA_LENGTH = 200
+EMA_FAST_LENGTH = 7   # EMA rápida sobre el propio par, para detectar cruces de momentum
 BTC_TREND_REFRESH_SECONDS = 1800   # cada 30 min es de sobra para un dato informativo
 
 # Estado global de la tendencia de BTC, se actualiza en segundo plano.
@@ -141,7 +142,7 @@ def classify_impulse_strength(body_ratio, vol_ratio):
         return "🔴 Débil"
 
 
-def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False, impulse_strength=None, impulse_beats_barrido=False):
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False, impulse_strength=None, impulse_beats_barrido=False, ema_cross=False):
     """Puntúa la calidad global de la entrada combinando volatilidad,
     tamaño del hueco, alineación con la tendencia de BTC, funding rate
     extremo a favor, y si el RSI ya se está alejando del extremo (señal
@@ -153,6 +154,8 @@ def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction,
     if impulse_strength == "🟢 Fuerte":
         score += 1
     if impulse_beats_barrido:
+        score += 1
+    if ema_cross:
         score += 1
     if volatility_label in ("Fuerte", "Extrema"):
         score += 1
@@ -336,6 +339,9 @@ def compute_indicators(df):
 
     # Volumen medio reciente, para detectar picos de volumen en el barrido
     df["vol_avg"] = df["volume"].rolling(VOLATILITY_LENGTH).mean()
+
+    # EMA rápida (7 velas) para detectar cruces de momentum a corto plazo
+    df["ema_fast"] = df["close"].ewm(span=EMA_FAST_LENGTH, adjust=False).mean()
 
     return df
 
@@ -551,10 +557,19 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                     (st["dir"] == "short" and rsi < st["sig_rsi"] - 5)
                     or (st["dir"] == "long" and rsi > st["sig_rsi"] + 5)
                 )
+                # ¿Acaba de cruzar la EMA rápida (7) a favor, entre la vela
+                # anterior y esta? (confirmación de momentum en el precio)
+                prev_close = df["close"].iloc[i - 1]
+                prev_ema = df["ema_fast"].iloc[i - 1]
+                ema_cross = (
+                    (st["dir"] == "long" and prev_close <= prev_ema and close > row["ema_fast"])
+                    or (st["dir"] == "short" and prev_close >= prev_ema and close < row["ema_fast"])
+                )
+
                 entry_quality = classify_entry_quality(
                     st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
                     st["dir"], st["barrido_funding_rate"], rsi_turning,
-                    impulse_strength, impulse_beats_barrido
+                    impulse_strength, impulse_beats_barrido, ema_cross
                 )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
@@ -568,8 +583,8 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                         f"Dirección: *{st['dir'].upper()}*\n"
                         f"⭐ Calidad de la señal: *{entry_quality}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
-                        f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok} | RSI a favor: {rsi_ok}\n"
-                        f"💥 Impulso del FVG: *{impulse_strength}*{' (supera al barrido)' if impulse_beats_barrido else ''}\n"
+                        f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok} | RSI a favor: {rsi_ok} | Cruce EMA7: {'✅' if ema_cross else '❌'}\n"
+                        f"💥 Impulso del FVG: *{impulse_strength}* | Volumen vs. barrido: *{'mayor ✅' if impulse_beats_barrido else 'menor'}*\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
