@@ -124,7 +124,24 @@ def classify_sweep_strength(body_ratio, wick_ratio, vol_ratio):
         return "🔴 Débil"
 
 
-def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False):
+def classify_impulse_strength(body_ratio, vol_ratio):
+    """Igual idea que classify_sweep_strength, pero solo con cuerpo y
+    volumen (la vela de impulso del FVG no tiene un concepto de 'mecha
+    de rechazo' relevante, es una vela de continuación, no de giro)."""
+    score = 0
+    if body_ratio >= 0.70:
+        score += 1
+    if vol_ratio is not None and vol_ratio >= 1.5:
+        score += 1
+    if score >= 2:
+        return "🟢 Fuerte"
+    elif score >= 1:
+        return "🟡 Media"
+    else:
+        return "🔴 Débil"
+
+
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False, impulse_strength=None, impulse_beats_barrido=False):
     """Puntúa la calidad global de la entrada combinando volatilidad,
     tamaño del hueco, alineación con la tendencia de BTC, funding rate
     extremo a favor, y si el RSI ya se está alejando del extremo (señal
@@ -132,6 +149,10 @@ def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction,
     partida, ajustables con el backtest."""
     score = 0
     if rsi_turning:
+        score += 1
+    if impulse_strength == "🟢 Fuerte":
+        score += 1
+    if impulse_beats_barrido:
         score += 1
     if volatility_label in ("Fuerte", "Extrema"):
         score += 1
@@ -233,6 +254,8 @@ def default_state():
         "barrido_wick_ratio": None,
         "barrido_funding_rate": None,
         "barrido_strength": None,
+        "fvg_impulse_strength": None,
+        "fvg_impulse_vol_ratio": None,
         "pullback_count": 0,
         "retroceso_confirmed": False,
         "sweep_time": None,
@@ -500,6 +523,28 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                     st["sl_price"] = g_mid * (1 - SL_PCT / 100) if st["dir"] == "long" else g_mid * (1 + SL_PCT / 100)
                 st["state"] = "wait_fill"
                 gap_size_atr = abs(g_top - g_bot) / atr
+
+                # Vela de impulso (la del medio, i-1): la que realmente genera
+                # el hueco. Medimos su cuerpo y su volumen, igual que hacemos
+                # con la vela del barrido, para saber si el movimiento que va
+                # a seguir tu entrada tiene convicción real detrás.
+                impulse_row = df.iloc[i - 1]
+                impulse_body = abs(impulse_row["close"] - impulse_row["open"])
+                impulse_range = impulse_row["high"] - impulse_row["low"]
+                impulse_body_ratio = (impulse_body / impulse_range) if impulse_range > 0 else 0.0
+                impulse_vol_avg = impulse_row["vol_avg"]
+                impulse_vol_ratio = (
+                    impulse_row["volume"] / impulse_vol_avg
+                    if impulse_vol_avg and impulse_vol_avg > 0 else None
+                )
+                impulse_strength = classify_impulse_strength(impulse_body_ratio, impulse_vol_ratio)
+                impulse_beats_barrido = (
+                    impulse_vol_ratio is not None and st["barrido_vol_ratio"] is not None
+                    and impulse_vol_ratio > st["barrido_vol_ratio"]
+                )
+                st["fvg_impulse_strength"] = impulse_strength
+                st["fvg_impulse_vol_ratio"] = impulse_vol_ratio
+
                 # ¿El RSI ya se alejó al menos 5 puntos del extremo de la señal?
                 # (señal de que el impulso contrario está perdiendo fuerza)
                 rsi_turning = (
@@ -508,7 +553,8 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 )
                 entry_quality = classify_entry_quality(
                     st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
-                    st["dir"], st["barrido_funding_rate"], rsi_turning
+                    st["dir"], st["barrido_funding_rate"], rsi_turning,
+                    impulse_strength, impulse_beats_barrido
                 )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
@@ -523,6 +569,7 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                         f"⭐ Calidad de la señal: *{entry_quality}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
                         f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok} | RSI a favor: {rsi_ok}\n"
+                        f"💥 Impulso del FVG: *{impulse_strength}*{' (supera al barrido)' if impulse_beats_barrido else ''}\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
                         f"🛑 SL: `{st['sl_price']:.6f}`"
