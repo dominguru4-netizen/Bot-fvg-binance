@@ -142,7 +142,7 @@ def classify_impulse_strength(body_ratio, vol_ratio):
         return "🔴 Débil"
 
 
-def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False, impulse_strength=None, impulse_beats_barrido=False, ema_cross=False):
+def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction, funding_rate, rsi_turning=False, impulse_strength=None, impulse_beats_barrido=False, ema_cross=False, order_flow_favor=None, oi_dropping=None):
     """Puntúa la calidad global de la entrada combinando volatilidad,
     tamaño del hueco, alineación con la tendencia de BTC, funding rate
     extremo a favor, y si el RSI ya se está alejando del extremo (señal
@@ -156,6 +156,10 @@ def classify_entry_quality(volatility_label, gap_size_atr, btc_trend, direction,
     if impulse_beats_barrido:
         score += 1
     if ema_cross:
+        score += 1
+    if order_flow_favor:
+        score += 1
+    if oi_dropping:
         score += 1
     if volatility_label in ("Fuerte", "Extrema"):
         score += 1
@@ -259,6 +263,9 @@ def default_state():
         "barrido_strength": None,
         "fvg_impulse_strength": None,
         "fvg_impulse_vol_ratio": None,
+        "fvg_order_flow_favor": None,
+        "oi_at_barrido": None,
+        "fvg_oi_dropping": None,
         "pullback_count": 0,
         "retroceso_confirmed": False,
         "sweep_time": None,
@@ -343,10 +350,18 @@ def compute_indicators(df):
     # EMA rápida (7 velas) para detectar cruces de momentum a corto plazo
     df["ema_fast"] = df["close"].ewm(span=EMA_FAST_LENGTH, adjust=False).mean()
 
+    # % del volumen de cada vela que fue compra agresiva (taker buy).
+    # >0.5 = dominan compradores, <0.5 = dominan vendedores. None si no
+    # se pudo obtener ese dato (ver fetch_klines_with_taker_volume).
+    if "taker_buy_volume" in df.columns and df["taker_buy_volume"].notna().any():
+        df["buy_ratio"] = df["taker_buy_volume"] / df["volume"].replace(0, float("nan"))
+    else:
+        df["buy_ratio"] = None
+
     return df
 
 
-def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
+def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None, current_oi=None):
     """Procesa UNA vela replicando exactamente los bloques del script Pine,
     en el mismo orden (no son excluyentes entre sí, igual que en Pine)."""
     row = df.iloc[i]
@@ -440,6 +455,7 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 # solo cancela si el precio invalida el barrido moviéndose en contra.
                 st["barrido_price"] = close
                 st["extreme_adverse"] = low if st["dir"] == "long" else high
+                st["oi_at_barrido"] = current_oi
 
                 # Volumen: ¿esta vela tuvo un pico respecto a lo normal reciente?
                 vol_avg = row["vol_avg"]
@@ -551,6 +567,26 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 st["fvg_impulse_strength"] = impulse_strength
                 st["fvg_impulse_vol_ratio"] = impulse_vol_ratio
 
+                # ¿El volumen de la vela de impulso fue mayoritariamente de
+                # compradores o de vendedores? Debe coincidir con tu dirección.
+                impulse_buy_ratio = impulse_row["buy_ratio"]
+                order_flow_favor = None
+                if impulse_buy_ratio is not None and not pd.isna(impulse_buy_ratio):
+                    if st["dir"] == "long":
+                        order_flow_favor = impulse_buy_ratio > 0.55
+                    else:
+                        order_flow_favor = impulse_buy_ratio < 0.45
+                st["fvg_order_flow_favor"] = order_flow_favor
+
+                # ¿Cayó el Open Interest desde el barrido? Si baja, es señal
+                # de liquidaciones/cierres reales (barrido genuino). Si sube,
+                # es gente nueva entrando -> más probable que sea continuación
+                # real, no una trampa de liquidez.
+                oi_dropping = None
+                if current_oi is not None and st["oi_at_barrido"] is not None:
+                    oi_dropping = current_oi < st["oi_at_barrido"]
+                st["fvg_oi_dropping"] = oi_dropping
+
                 # ¿El RSI ya se alejó al menos 5 puntos del extremo de la señal?
                 # (señal de que el impulso contrario está perdiendo fuerza)
                 rsi_turning = (
@@ -569,7 +605,7 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                 entry_quality = classify_entry_quality(
                     st["sig_volatility_label"], gap_size_atr, btc_trend_state["trend"],
                     st["dir"], st["barrido_funding_rate"], rsi_turning,
-                    impulse_strength, impulse_beats_barrido, ema_cross
+                    impulse_strength, impulse_beats_barrido, ema_cross, order_flow_favor, oi_dropping
                 )
                 if alert_enabled:
                     emoji = DIR_EMOJI[st["dir"]]
@@ -584,6 +620,8 @@ def process_bar(symbol, i, df, st, alert_enabled, funding_rate=None):
                         f"⭐ Calidad de la señal: *{entry_quality}*\n"
                         f"📊 Volatilidad: *{st['sig_volatility_label']}* | Barrido: *{st['barrido_strength']}*\n"
                         f"🔍 Datos usados → Funding: {funding_ok} | BTC: {btc_ok} | Volumen: {vol_ok} | RSI a favor: {rsi_ok} | Cruce EMA7: {'✅' if ema_cross else '❌'}\n"
+                        f"📈 Compradores/vendedores a favor: {'✅' if order_flow_favor else ('❌ s/d' if order_flow_favor is None else '❌')}\n"
+                        f"📉 Open Interest cayendo (liquidaciones): {'✅' if oi_dropping else ('❌ s/d' if oi_dropping is None else '❌ (subiendo)')}\n"
                         f"💥 Impulso del FVG: *{impulse_strength}* | Volumen vs. barrido: *{'mayor ✅' if impulse_beats_barrido else 'menor'}*\n"
                         f"📍 Entrada límite (50% FVG): `{st['entry_price']:.6f}`\n"
                         f"🎯 TP: `{st['tp_price']:.6f}`\n"
@@ -630,6 +668,37 @@ async def update_funding_rates_cache():
         print(f"Error actualizando funding rates: {e}", flush=True)
 
 
+async def fetch_klines_with_taker_volume(symbol, limit):
+    """Pide las velas usando el endpoint 'crudo' de Binance Futures, que
+    además de OHLCV trae el volumen de compra agresiva (taker buy volume)
+    en cada vela — así podemos saber si el volumen de una vela fue más de
+    compradores o de vendedores, no solo 'cuánto' volumen hubo.
+    Si este método falla por lo que sea, cae automáticamente al método
+    normal (sin ese dato extra) para que el bot no se rompa por esto."""
+    try:
+        market_id = exchange.market_id(symbol)
+        raw = await exchange.fapiPublicGetKlines({"symbol": market_id, "interval": TIMEFRAME, "limit": limit})
+        bars = [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in raw]
+        taker_buy_vols = [float(k[9]) for k in raw]
+        return bars, taker_buy_vols
+    except Exception as e:
+        print(f"Aviso: no se pudo pedir volumen comprador/vendedor de {symbol}, usando datos normales: {e}", flush=True)
+        bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=limit)
+        return bars, None
+
+
+async def fetch_open_interest_safe(symbol):
+    """Pide el Open Interest actual del símbolo. Devuelve None si falla."""
+    try:
+        data = await exchange.fetch_open_interest(symbol)
+        oi = data.get("openInterestAmount")
+        if oi is None:
+            oi = data.get("info", {}).get("openInterest")
+        return float(oi) if oi is not None else None
+    except Exception:
+        return None
+
+
 async def run_symbol(symbol, semaphore):
     async with semaphore:
         try:
@@ -640,7 +709,16 @@ async def run_symbol(symbol, semaphore):
             # siguientes basta con unas pocas velas recientes — esto reduce
             # drásticamente el número de peticiones "pesadas" por ciclo.
             limit = FETCH_LIMIT if not st["initialized"] else FETCH_LIMIT_REFRESH
-            bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=limit)
+
+            # El Open Interest solo se pide para símbolos con una señal
+            # activa en curso (esperando barrido o FVG) — no para los 271
+            # en cada ciclo, para no repetir el problema de rate-limit.
+            if st["state"] in ("sweep", "fvg"):
+                current_oi = await fetch_open_interest_safe(symbol)
+            else:
+                current_oi = None
+
+            bars, taker_buy_vols = await fetch_klines_with_taker_volume(symbol, limit)
             if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
                 return
 
@@ -648,7 +726,7 @@ async def run_symbol(symbol, semaphore):
             # fetch pequeño, no hay datos suficientes para reconstruir bien
             # el estado -> se repite la petición pidiendo el historial completo.
             if st["initialized"] and st["last_time"] is not None and bars[0][0] > st["last_time"] + BAR_MS:
-                bars = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=FETCH_LIMIT)
+                bars, taker_buy_vols = await fetch_klines_with_taker_volume(symbol, FETCH_LIMIT)
                 if not bars or len(bars) < BB_LENGTH + ATR_LENGTH + 5:
                     return
 
@@ -656,14 +734,19 @@ async def run_symbol(symbol, semaphore):
             # en vez de "BTC/USDT" — se prueban las dos formas por seguridad.
             funding_rate = funding_rates_cache.get(symbol) or funding_rates_cache.get(f"{symbol}:USDT")
             # Se descarta la última vela porque aún está en formación (no cerrada)
-            df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"]).iloc[:-1].copy()
+            df = pd.DataFrame(bars, columns=["time", "open", "high", "low", "close", "volume"])
+            if taker_buy_vols is not None and len(taker_buy_vols) == len(df):
+                df["taker_buy_volume"] = taker_buy_vols
+            else:
+                df["taker_buy_volume"] = None
+            df = df.iloc[:-1].copy()
             df = compute_indicators(df)
 
             if not st["initialized"]:
                 # Primera vez que vemos este símbolo: reconstruimos en qué estado
                 # está AHORA MISMO sin mandar alertas de todo el histórico.
                 for i in range(len(df)):
-                    process_bar(symbol, i, df, st, alert_enabled=False, funding_rate=funding_rate)
+                    process_bar(symbol, i, df, st, alert_enabled=False, funding_rate=funding_rate, current_oi=current_oi)
                 st["initialized"] = True
             else:
                 new_rows = df[df["time"] > st["last_time"]]
@@ -671,7 +754,7 @@ async def run_symbol(symbol, semaphore):
                     return
                 start_idx = new_rows.index[0]
                 for i in range(start_idx, len(df)):
-                    process_bar(symbol, i, df, st, alert_enabled=True, funding_rate=funding_rate)
+                    process_bar(symbol, i, df, st, alert_enabled=True, funding_rate=funding_rate, current_oi=current_oi)
 
         except Exception as e:
             print(f"Error en {symbol}: {e}", flush=True)
