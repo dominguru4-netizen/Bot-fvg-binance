@@ -59,7 +59,7 @@ SIGNAL_MIN_RANGE_PCT = 1.5
 # --- Filtro de tendencia de BTC (4h) ---
 # Solo se toman largos si BTC está en tendencia alcista, y cortos si está
 # en tendencia bajista, para evitar ir contra la marea general del mercado.
-BTC_TREND_ENABLED = True
+BTC_TREND_ENABLED = False  # desactivado para reducir peticiones mientras dura el baneo de IP
 BTC_TREND_SYMBOL = "BTC/USDT"
 BTC_TREND_TIMEFRAME = "3m"
 BTC_TREND_EMA_LENGTH = 200
