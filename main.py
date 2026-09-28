@@ -199,7 +199,7 @@ SYMBOLS = list(set([
     "SOON/USDT", "SPORTFUN/USDT", "SPX/USDT", "SSV/USDT", "SYRUP/USDT", "TAO/USDT",
     "THE/USDT", "TRIA/USDT", "TRUMP/USDT", "TRX/USDT", "UB/USDT", "VET/USDT",
     "VIRTUAL/USDT", "WLD/USDT", "WLFI/USDT", "XLM/USDT", "XPL/USDT", "XVG/USDT",
-    "ZAMA/USDT"
+    "ZAMA/USDT", "CYBERLEEK/USDT", "SIUS/USDT"
 ]))
 
 exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "swap"}})
